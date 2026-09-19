@@ -16,12 +16,6 @@ const UA =
 let authCookie = ''
 let authCrumb = ''
 
-function json(res: any, status: number, body: unknown) {
-  res.statusCode = status
-  res.setHeader('Content-Type', 'application/json; charset=utf-8')
-  res.end(JSON.stringify(body))
-}
-
 function getSetCookies(res: any): string[] {
   const headers = res.headers as unknown as { getSetCookie?: () => string[] }
   if (typeof headers.getSetCookie === 'function') return headers.getSetCookie()
@@ -196,27 +190,33 @@ async function loadSymbol(symbol: string, period1: number, period2: number) {
   return row
 }
 
-export default async function handler(req: any, res: any) {
-  const raw = req.url || '/'
-  const url = new URL(raw, 'http://127.0.0.1')
-  const symbols = (url.searchParams.get('symbols') || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-  const start = url.searchParams.get('start') || '2019-01-01'
-  const end = url.searchParams.get('end') || new Date().toISOString().slice(0, 10)
-  if (!symbols.length) {
-    json(res, 200, { bars: {}, splits: {} })
-    return
-  }
-  const period1 = Math.floor(Date.parse(`${start}T00:00:00Z`) / 1000)
-  const period2 = Math.floor(Date.parse(`${end}T23:59:59Z`) / 1000) + 86400
-  const rows = await mapPool(symbols, 4, (symbol) => loadSymbol(symbol, period1, period2))
-  const bars: Record<string, ProxyBar[]> = {}
-  const splits: Record<string, number> = {}
-  symbols.forEach((symbol, i) => {
-    bars[symbol] = rows[i].bars
-    if (rows[i].splits) splits[symbol] = rows[i].splits
-  })
-  json(res, 200, { bars, splits })
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+    const symbols = (url.searchParams.get('symbols') || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const start = url.searchParams.get('start') || '2019-01-01'
+    const end = url.searchParams.get('end') || new Date().toISOString().slice(0, 10)
+
+    let body: unknown = { bars: {}, splits: {} }
+    if (symbols.length) {
+      const period1 = Math.floor(Date.parse(`${start}T00:00:00Z`) / 1000)
+      const period2 = Math.floor(Date.parse(`${end}T23:59:59Z`) / 1000) + 86400
+      const rows = await mapPool(symbols, 4, (symbol) => loadSymbol(symbol, period1, period2))
+      const bars: Record<string, ProxyBar[]> = {}
+      const splits: Record<string, number> = {}
+      symbols.forEach((symbol, i) => {
+        bars[symbol] = rows[i].bars
+        if (rows[i].splits) splits[symbol] = rows[i].splits
+      })
+      body = { bars, splits }
+    }
+
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    })
+  },
 }
