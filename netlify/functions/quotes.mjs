@@ -220,9 +220,11 @@ async function loadSymbol(symbol, period1, period2) {
 }
 
 export default async function handler(event) {
-  const qs = event.queryStringParameters || {}
+  const sp = event.url
+    ? new URL(event.url).searchParams
+    : new URLSearchParams(event.queryStringParameters || {})
 
-  if (qs.diag === '1') {
+  if (sp.get('diag') === '1') {
     const twelveKey = process.env.TWELVE_DATA_KEY || ''
     const avKey = process.env.ALPHA_VANTAGE_KEY || ''
     let tdStatus = 'no_key'
@@ -242,12 +244,12 @@ export default async function handler(event) {
     })
   }
 
-  const symbols = (qs.symbols || '')
+  const symbols = (sp.get('symbols') || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
-  const start = qs.start || '2019-01-01'
-  const end = qs.end || new Date().toISOString().slice(0, 10)
+  const start = sp.get('start') || '2019-01-01'
+  const end = sp.get('end') || new Date().toISOString().slice(0, 10)
 
   let body = { bars: {}, splits: {} }
   if (symbols.length) {
