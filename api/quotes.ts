@@ -1,5 +1,3 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
-
 type ProxyBar = {
   date: string
   open: number
@@ -18,13 +16,13 @@ const UA =
 let authCookie = ''
 let authCrumb = ''
 
-function json(res: ServerResponse, status: number, body: unknown) {
+function json(res: any, status: number, body: unknown) {
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.end(JSON.stringify(body))
 }
 
-function getSetCookies(res: Response): string[] {
+function getSetCookies(res: any): string[] {
   const headers = res.headers as unknown as { getSetCookie?: () => string[] }
   if (typeof headers.getSetCookie === 'function') return headers.getSetCookie()
   const raw = res.headers.get('set-cookie')
@@ -198,7 +196,7 @@ async function loadSymbol(symbol: string, period1: number, period2: number) {
   return row
 }
 
-export default async function handler(req: IncomingMessage, res: ServerResponse) {
+export default async function handler(req: any, res: any) {
   const raw = req.url || '/'
   const url = new URL(raw, 'http://127.0.0.1')
   const symbols = (url.searchParams.get('symbols') || '')
