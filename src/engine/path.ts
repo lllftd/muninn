@@ -104,6 +104,14 @@ export function replayTrip(trip: RoundTrip, bars: Bar[] | undefined, vixBars?: B
     recoveryRate = (realized - maeDollar) / Math.abs(maeDollar)
   }
 
+  // 疑似公司行动（如拆股未复权）：开仓价与持仓期日线价格量级不匹配
+  const splitSuspect =
+    pathQuality === 'daily_estimate' &&
+    open > 0 &&
+    mfePrice != null &&
+    maePrice != null &&
+    Math.max(open / mfePrice, open / maePrice, mfePrice / open, maePrice / open) > 2
+
   const atr = bars?.length ? atr20(bars, start) : null
   const risk = atr && atr > 0 ? atr * qty : null
   const rMultiple = risk && risk > 0 ? realized / risk : null
@@ -135,6 +143,7 @@ export function replayTrip(trip: RoundTrip, bars: Bar[] | undefined, vixBars?: B
     givebackRate,
     recoveryRate,
     pathAnomaly,
+    splitSuspect,
     moneyLeft,
     lateStopCost: Math.max(0, lateStopCost),
     rMultiple,

@@ -89,6 +89,13 @@ export function assembleBook(args: {
       message: `持仓期有拆股记录的代码：${splitSyms.join(', ')}。日线估算 MAE/MFE 仅供参考。`,
     })
   }
+  const suspectSyms = [...new Set([...fifoReplay.trips, ...epReplay.trips].filter((t) => t.splitSuspect).map((t) => t.symbol))]
+  if (suspectSyms.length) {
+    warnings.push({
+      code: 'split-suspect',
+      message: `疑似公司行动（价格出现非市场性跳变，可能拆股未复权）：${suspectSyms.join(', ')}。请确认拆股后的持仓数量与成本基础。`,
+    })
+  }
 
   const { equity, rf } = buildEquity({
     fills: imported.fills,

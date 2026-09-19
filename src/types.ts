@@ -132,6 +132,7 @@ export type RoundTrip = {
   givebackRate: number | null
   recoveryRate: number | null
   pathAnomaly: boolean
+  splitSuspect: boolean
   moneyLeft: number | null
   lateStopCost: number | null
   rMultiple: number | null

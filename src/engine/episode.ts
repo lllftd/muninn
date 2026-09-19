@@ -36,6 +36,7 @@ function emptyEpisode(fill: Fill, side: Direction, id: string): RoundTrip {
     givebackRate: null,
     recoveryRate: null,
     pathAnomaly: false,
+    splitSuspect: false,
     moneyLeft: null,
     lateStopCost: null,
     rMultiple: null,

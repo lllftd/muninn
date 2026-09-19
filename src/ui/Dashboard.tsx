@@ -65,6 +65,7 @@ function MetricLine(props: {
   digits?: number
   onClick?: () => void
   filtered?: boolean
+  plain?: boolean
 }) {
   const kind = props.kind ?? 'num'
   const digits = props.digits ?? (kind === 'money' ? 0 : kind === 'pct' ? 1 : 2)
@@ -75,12 +76,14 @@ function MetricLine(props: {
       : !Number.isFinite(v)
         ? finiteNum(v, digits)
         : kind === 'pct'
-          ? pct(v, digits)
+          ? props.plain
+            ? pctPlain(v, digits)
+            : pct(v, digits)
           : kind === 'money'
             ? money(v, digits)
             : v.toFixed(digits)
   const innerValue = (
-    <b className={v != null && kind !== 'num' && props.m.n >= 10 ? clsPnl(v) : ''}>
+    <b className={v != null && kind !== 'num' && props.m.n >= 10 && !props.plain ? clsPnl(v) : ''}>
       {shown}
       <div className="tiny">
         n={props.m.n}
@@ -97,7 +100,7 @@ function MetricLine(props: {
         {props.k}
       </span>
       {props.onClick ? (
-        <b className={v != null && kind !== 'num' && props.m.n >= 10 ? clsPnl(v) : ''}>
+        <b className={v != null && kind !== 'num' && props.m.n >= 10 && !props.plain ? clsPnl(v) : ''}>
           <button type="button" className="link" onClick={props.onClick}>
             {shown}
           </button>
@@ -239,6 +242,133 @@ function tradeMetrics(trips: RoundTrip[]): { winRate: MetricPoint; expectancy: M
       naReason: gl <= 1e-9 && gp > 0 ? '没有亏损，PF 为 +∞' : undefined,
     },
   }
+}
+
+function EdgePanel(props: {
+  winRate: MetricPoint
+  payoff: MetricPoint
+  profitFactor: MetricPoint
+  expectancy: MetricPoint
+}) {
+  const wr = props.winRate.value
+  const payoff = props.payoff.value
+  const pf = props.profitFactor.value
+  const exp = props.expectancy.value
+  if (wr == null || payoff == null || !(payoff > 0)) return null
+  const be = 1 / (1 + payoff)
+  const hasEdge = wr >= be
+  const pfText = pf != null && Number.isFinite(pf) ? pf.toFixed(2) : '—'
+  const expText = exp != null ? money(exp) : '—'
+  return (
+    <article className="panel">
+      <h3>交易优势诊断</h3>
+      <p style={{ margin: '2px 0 8px', fontWeight: 600, color: hasEdge ? 'var(--up)' : 'var(--down)' }}>
+        {hasEdge ? '胜率高于盈亏平衡线，样本显示正向优势' : '当前样本尚未显示稳定的正向优势'}
+      </p>
+      <p className="tiny" style={{ marginBottom: 10 }}>
+        实际胜率 {pctPlain(wr, 0)}，盈亏平衡胜率 {pctPlain(be, 1)}；Profit Factor {pfText}，单笔期望 {expText}。
+      </p>
+      <div style={{ position: 'relative', height: 18, background: 'var(--line2)', borderRadius: 9, marginBottom: 6 }}>
+        <div
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            height: 18,
+            width: `${Math.min(wr * 100, 100)}%`,
+            background: 'var(--gold)',
+            borderRadius: 9,
+          }}
+        />
+        <div
+          style={{
+            position: 'absolute',
+            left: `${Math.min(be * 100, 100)}%`,
+            top: -4,
+            width: 2,
+            height: 26,
+            background: 'var(--down)',
+          }}
+          title={`盈亏平衡 ${pctPlain(be, 1)}`}
+        />
+      </div>
+      <div className="tiny" style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <span>实际胜率 {pctPlain(wr, 0)}</span>
+        <span>盈亏平衡线 {pctPlain(be, 1)}</span>
+      </div>
+    </article>
+  )
+}
+
+function PnLBySymbol(props: { trips: RoundTrip[] }) {
+  const bySym = new Map<string, number>()
+  for (const t of props.trips) bySym.set(t.symbol, (bySym.get(t.symbol) || 0) + t.realizedPnl)
+  const rows = [...bySym.entries()].map(([symbol, pnl]) => ({ symbol, pnl })).sort((a, b) => b.pnl - a.pnl)
+  if (!rows.length) return null
+  const maxAbs = Math.max(...rows.map((r) => Math.abs(r.pnl)), 1)
+  const wins = rows.filter((r) => r.pnl > 0)
+  const losses = rows.filter((r) => r.pnl < 0).reverse()
+  const bar = (r: { symbol: string; pnl: number }) => (
+    <div key={r.symbol} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+      <span style={{ width: 52, textAlign: 'right', fontSize: 12 }}>{r.symbol}</span>
+      <div style={{ flex: 1, position: 'relative', height: 10, background: 'var(--line2)', borderRadius: 5 }}>
+        <div
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            height: 10,
+            width: `${(Math.abs(r.pnl) / maxAbs) * 100}%`,
+            background: r.pnl >= 0 ? 'var(--up)' : 'var(--down)',
+            borderRadius: 5,
+          }}
+        />
+      </div>
+      <span style={{ width: 88, textAlign: 'right', fontSize: 12 }} className={clsPnl(r.pnl)}>
+        {money(r.pnl)}
+      </span>
+    </div>
+  )
+  return (
+    <div>
+      {wins.map(bar)}
+      {wins.length && losses.length ? <div style={{ height: 1, background: 'var(--line2)', margin: '6px 0' }} /> : null}
+      {losses.map(bar)}
+    </div>
+  )
+}
+
+function RDistribution(props: { trips: RoundTrip[] }) {
+  const rs = props.trips.map((t) => t.rMultiple).filter((r): r is number => r != null && Number.isFinite(r))
+  if (!rs.length) return null
+  const buckets = [
+    { label: '≤ -5R', lo: -Infinity, hi: -5 },
+    { label: '-5R~-2R', lo: -5, hi: -2 },
+    { label: '-2R~0R', lo: -2, hi: 0 },
+    { label: '0R~2R', lo: 0, hi: 2 },
+    { label: '≥ 2R', lo: 2, hi: Infinity },
+  ]
+  const counts = buckets.map((b) => rs.filter((r) => r >= b.lo && r < b.hi).length)
+  const maxCount = Math.max(...counts, 1)
+  const mean = rs.reduce((s, r) => s + r, 0) / rs.length
+  const sorted = [...rs].sort((a, b) => a - b)
+  const median = sorted.length % 2 ? sorted[Math.floor(sorted.length / 2)] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+  return (
+    <div style={{ marginTop: 10 }}>
+      {buckets.map((b, i) => (
+        <div key={b.label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+          <span style={{ width: 68, textAlign: 'right', fontSize: 12 }}>{b.label}</span>
+          <div style={{ flex: 1, position: 'relative', height: 12, background: 'var(--line2)', borderRadius: 4 }}>
+            <div style={{ position: 'absolute', left: 0, top: 0, height: 12, width: `${(counts[i] / maxCount) * 100}%`, background: 'var(--gold)', borderRadius: 4 }} />
+          </div>
+          <span style={{ width: 24, textAlign: 'right', fontSize: 12 }}>{counts[i]}</span>
+        </div>
+      ))}
+      <p className="tiny" style={{ marginTop: 6 }}>
+        中位数 {median.toFixed(2)}R · 平均 {mean.toFixed(2)}R · n={rs.length}。典型交易接近盈亏平衡，少数极端亏损拖累整体。
+      </p>
+    </div>
+  )
 }
 
 function coverageTone(row: CoverageRow): 'ok' | 'watch' | 'fail' | 'na' {
@@ -748,14 +878,20 @@ export function Dashboard(props: {
           {filtered ? (
             <p className="tiny">胜率和期望已按上面选中的交易重算。TWR 仍用整本账。</p>
           ) : null}
+          <EdgePanel winRate={winRate} payoff={p.payoff} profitFactor={profitFactor} expectancy={expectancy} />
+          <article className="panel">
+            <h3>盈亏贡献</h3>
+            <p className="muted">按股票聚合已实现盈亏，盈利在上、亏损在下。判断盈利是否集中在少数交易。</p>
+            <PnLBySymbol trips={scoped} />
+          </article>
           <div className="grid-2">
             <article className="panel">
               <h3>交易质量观察</h3>
               <p className="muted">质量与行为按持仓片段（episode）计算；核算仍用 FIFO。每个数字都带 n 和区间。</p>
               <div className="kv-grid">
-                <MetricLine k="胜率" m={winRate} kind="pct" digits={0} filtered={filtered} onClick={() => openInsight({ kind: 'winRate' })} />
+                <MetricLine k="胜率" m={winRate} kind="pct" digits={0} plain filtered={filtered} onClick={() => openInsight({ kind: 'winRate' })} />
                 {p.winRateBoot && !filtered ? (
-                  <MetricLine k="胜率 bootstrap" m={p.winRateBoot} kind="pct" digits={0} />
+                  <MetricLine k="胜率 bootstrap" m={p.winRateBoot} kind="pct" digits={0} plain />
                 ) : null}
                 <MetricLine k="单笔期望" m={expectancy} kind="money" filtered={filtered} onClick={() => openInsight({ kind: 'expectancy' })} />
                 <MetricLine k={<Hint term="Profit Factor" def="毛利除以毛亏。没有亏损时记为 +∞，bootstrap 里这些轮次保留，不删除。" />} m={profitFactor} kind="num" filtered={filtered} />
@@ -816,6 +952,7 @@ export function Dashboard(props: {
                   {p.atrR.p05 != null ? p.atrR.p05.toFixed(2) : '—'} / {p.atrR.p10 != null ? p.atrR.p10.toFixed(2) : '—'}
                 </b>
               </div>
+              <RDistribution trips={scoped} />
             </article>
             <article className="panel">
               <h3>高级指标</h3>
@@ -855,6 +992,7 @@ export function Dashboard(props: {
                 x: t.maePct || 0,
                 y: t.mfePct || 0,
                 up: t.realizedPnl >= 0,
+                label: `${t.symbol} · ${money(t.realizedPnl)} · MAE ${t.maePct != null ? pctPlain(t.maePct, 1) : 'N/A'} · MFE ${t.mfePct != null ? pctPlain(t.mfePct, 1) : 'N/A'}`,
               }))}
               onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
             />

@@ -12,19 +12,18 @@ export function finiteNum(n: number, digits = 2): string {
 
 export function money(n: number, digits = 0): string {
   if (!Number.isFinite(n)) return n > 0 ? '+∞' : '−∞'
-  if (Math.abs(n) < 5 / 10 ** (digits + 1)) {
-    return `$${Number(0).toLocaleString('en-US', {
-      minimumFractionDigits: digits,
-      maximumFractionDigits: digits,
-    })}`
-  }
   const abs = Math.abs(n)
+  if (n !== 0 && abs < 5 / 10 ** (digits + 1)) {
+    // 接近 0 但非 0：显示带符号的小数，避免同样的 $0 一会儿红一会儿绿
+    return `${n > 0 ? '+' : '-'}$${abs.toFixed(2)}`
+  }
   const s = abs.toLocaleString('en-US', {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   })
   if (n > 0) return `+$${s}`
-  return `-$${s}`
+  if (n < 0) return `-$${s}`
+  return `$${s}`
 }
 
 export function moneyAbs(n: number, digits = 0): string {

@@ -218,7 +218,7 @@ export function AreaDrawdown(props: {
 }
 
 export function Scatter(props: {
-  points: Array<{ x: number; y: number; up: boolean; id: string }>
+  points: Array<{ x: number; y: number; up: boolean; id: string; label?: string }>
   onPick: (id: string) => void
   height?: number
 }) {
@@ -226,30 +226,63 @@ export function Scatter(props: {
   const h = props.height ?? 240
   const xs = props.points.map((p) => p.x)
   const ys = props.points.map((p) => p.y)
-  const minX = Math.min(...xs, -0.05)
-  const maxX = Math.max(...xs, 0)
+  const minX = Math.min(-1, ...xs)
+  const maxX = 0
   const minY = Math.min(0, ...ys)
-  const maxY = Math.max(...ys, 0.05)
+  const maxY = Math.max(1, ...ys)
   const xSpan = maxX - minX || 1
   const ySpan = maxY - minY || 1
-  const px = (x: number) => ((x - minX) / xSpan) * (w - 40) + 28
-  const py = (y: number) => (1 - (y - minY) / ySpan) * (h - 36) + 12
+  const px = (x: number) => ((x - minX) / xSpan) * (w - 72) + 56
+  const py = (y: number) => (1 - (y - minY) / ySpan) * (h - 44) + 20
+  const pctL = (v: number) => `${Math.round(v * 100)}%`
+  const xTicks = [...new Set([minX, (minX + maxX) / 2, 0])]
+  const yTicks = [...new Set([minY, (minY + maxY) / 2, maxY])]
+  const axis = { fontSize: 11, fill: 'var(--muted)' }
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="chart scatter">
-      <line x1={px(minX)} x2={px(maxX)} y1={py(0)} y2={py(0)} className="grid" />
-      <line x1={px(0)} x2={px(0)} y1={12} y2={h - 24} className="grid" />
-      {props.points.map((p) => (
-        <circle
-          key={p.id}
-          cx={px(p.x)}
-          cy={py(p.y)}
-          r={5}
-          fill={p.up ? 'var(--up)' : 'var(--down)'}
-          className="dot"
-          onClick={() => props.onPick(p.id)}
-        />
-      ))}
-    </svg>
+    <div>
+      <svg viewBox={`0 0 ${w} ${h}`} className="chart scatter">
+        <line x1={px(minX)} x2={px(maxX)} y1={py(0)} y2={py(0)} className="grid" />
+        <line x1={px(0)} x2={px(0)} y1={py(maxY)} y2={py(minY)} className="grid" />
+        {xTicks.map((t) => (
+          <g key={`x${t}`}>
+            <line x1={px(t)} x2={px(t)} y1={py(minY)} y2={py(minY) + 4} className="grid" />
+            <text x={px(t)} y={h - 6} textAnchor="middle" style={axis}>
+              {pctL(t)}
+            </text>
+          </g>
+        ))}
+        {yTicks.map((t) => (
+          <g key={`y${t}`}>
+            <line x1={px(minX)} x2={px(minX) + 4} y1={py(t)} y2={py(t)} className="grid" />
+            <text x={px(minX) - 6} y={py(t) + 4} textAnchor="end" style={axis}>
+              {pctL(t)}
+            </text>
+          </g>
+        ))}
+        {props.points.map((p) => (
+          <circle
+            key={p.id}
+            cx={px(p.x)}
+            cy={py(p.y)}
+            r={5}
+            fill={p.up ? 'var(--up)' : 'var(--down)'}
+            className="dot"
+            onClick={() => props.onPick(p.id)}
+          >
+            {p.label ? <title>{p.label}</title> : null}
+          </circle>
+        ))}
+      </svg>
+      <div style={{ display: 'flex', gap: 16, marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+        <span>
+          <i style={{ color: 'var(--up)' }}>●</i> 最终盈利
+        </span>
+        <span>
+          <i style={{ color: 'var(--down)' }}>●</i> 最终亏损
+        </span>
+        <span>横轴 MAE · 纵轴 MFE（日线估算）</span>
+      </div>
+    </div>
   )
 }
 
