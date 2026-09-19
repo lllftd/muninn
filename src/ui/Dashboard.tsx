@@ -377,6 +377,14 @@ function coverageTone(row: CoverageRow): 'ok' | 'watch' | 'fail' | 'na' {
   return 'watch'
 }
 
+function coverageHandling(row: CoverageRow): string {
+  if (row.status === 'imported') return row.countedInPnl ? '已计入' : '已导入 · 未计入'
+  if (row.status === 'not_computable') return '无法计算'
+  if (row.item === '期初净资产') return '账户收益率不可计算'
+  if (row.item === '外部入出金') return 'XIRR 不可计算'
+  return '未计入'
+}
+
 function currentView(): Tab {
   return tabFromView(new URLSearchParams(window.location.search).get('view'))
 }
@@ -407,6 +415,7 @@ export function Dashboard(props: {
   const [symbolFilter, setSymbolFilter] = useState<string[]>([])
   const [cursor, setCursor] = useState<number | null>(null)
   const [range, setRange] = useState<{ lo: number; hi: number } | null>(null)
+  const [showAllTrips, setShowAllTrips] = useState(false)
 
   useEffect(() => {
     writeView(tab)
@@ -495,6 +504,31 @@ export function Dashboard(props: {
     setSymbolFilter([])
     setRange(null)
   }
+
+  const accountStats = (
+    <>
+      <Stat
+        k={<span className="hint">XIRR（年化）</span>}
+        v={p.xirr == null ? 'N/A' : signedPct(p.xirr)}
+        sub={p.xirrReason || '整本账 · 含入出金'}
+        tip="按你实际投进去、拿出来的钱算的年化回报。没有完整入出金时不猜，显示 N/A。"
+        onClick={() => openInsight({ kind: 'xirr' })}
+      />
+      <Stat
+        k={<span className="hint">相对基准财富</span>}
+        v={signedPct(p.relativeSpx)}
+        sub={
+          accountOk
+            ? p.benchKind === 'spy-total-return'
+              ? '账户级 · SPY 全收益'
+              : '账户级 · SPX 价格指数，不含股息'
+            : '要对拍基准需要账户收益率'
+        }
+        tip="把你的账户财富和基准从同一天滚到现在，看谁涨得多。优先用 SPY 复权全收益；没有 SPY 时改用 SPX 价格指数，不含股息。不是两个收益率直接相减。"
+        onClick={() => openInsight({ kind: 'spx' })}
+      />
+    </>
+  )
 
   return (
     <div className={`dash ${drawerOpen ? 'with-drawer' : ''} ${props.updating ? 'is-updating' : ''}`}>
@@ -586,26 +620,7 @@ export function Dashboard(props: {
           }
           onClick={() => openInsight({ kind: 'twr' })}
         />
-        <Stat
-          k={<span className="hint">XIRR（年化）</span>}
-          v={p.xirr == null ? 'N/A' : signedPct(p.xirr)}
-          sub={p.xirrReason || '整本账 · 含入出金'}
-          tip="按你实际投进去、拿出来的钱算的年化回报。没有完整入出金时不猜，显示 N/A。"
-          onClick={() => openInsight({ kind: 'xirr' })}
-        />
-        <Stat
-          k={<span className="hint">相对基准财富</span>}
-          v={signedPct(p.relativeSpx)}
-          sub={
-            accountOk
-              ? p.benchKind === 'spy-total-return'
-                ? '账户级 · SPY 全收益'
-                : '账户级 · SPX 价格指数，不含股息'
-              : '要对拍基准需要账户收益率'
-          }
-          tip="把你的账户财富和基准从同一天滚到现在，看谁涨得多。优先用 SPY 复权全收益；没有 SPY 时改用 SPX 价格指数，不含股息。不是两个收益率直接相减。"
-          onClick={() => openInsight({ kind: 'spx' })}
-        />
+        {accountOk ? accountStats : null}
         <Stat
           k={<span className="hint">最大回撤</span>}
           v={
@@ -647,10 +662,17 @@ export function Dashboard(props: {
         <Stat
           k={<span className="hint">单笔期望</span>}
           v={expectancy.value != null ? money(expectancy.value) : 'N/A'}
-          sub={filtered ? '按所选交易重算' : expectancy.ci ? `95% ${ciText(expectancy.ci, 'money', 0)}` : '—'}
+          sub={
+            filtered
+              ? '按所选交易重算'
+              : expectancy.ci
+                ? `95% 区间：${ciText(expectancy.ci, 'money', 0).replace('–', ' 至 ')}${expectancy.ci.lo < 0 && (expectancy.ci.hi == null || expectancy.ci.hi > 0) ? ' · 区间跨过 0，尚不明确正向期望' : ''}`
+                : '—'
+          }
           tip="平均每笔交易赚或亏多少钱。旁边的区间如果从亏到赚都有，说明现在还看不准到底有没有稳定优势。"
           onClick={() => openInsight({ kind: 'expectancy' })}
         />
+        {!accountOk ? accountStats : null}
       </section>
 
       <nav className="tabs sticky-tabs">
@@ -827,7 +849,7 @@ export function Dashboard(props: {
                 <tr>
                   <th>项目</th>
                   <th>状态</th>
-                  <th>计入净收益</th>
+                  <th>当前处理</th>
                 </tr>
               </thead>
               <tbody>
@@ -840,7 +862,7 @@ export function Dashboard(props: {
                     <td>
                       <VChip label={coverageLabel(row.status, row.countedInPnl)} tone={coverageTone(row)} />
                     </td>
-                    <td>{row.countedInPnl ? '是' : '否'}</td>
+                    <td>{coverageHandling(row)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1040,6 +1062,7 @@ export function Dashboard(props: {
               </tbody>
             </table>
           ) : (
+            <>
             <table className="grid trips">
               <thead>
                 <tr>
@@ -1054,7 +1077,7 @@ export function Dashboard(props: {
                 </tr>
               </thead>
               <tbody>
-                {closed.map((t) => (
+                {closed.slice(0, showAllTrips ? undefined : 15).map((t) => (
                   <tr
                     key={t.id}
                     className={selected?.id === t.id ? 'on' : ''}
@@ -1103,6 +1126,12 @@ export function Dashboard(props: {
                 ))}
               </tbody>
             </table>
+            {closed.length > 15 ? (
+              <button type="button" className="link" onClick={() => setShowAllTrips((v) => !v)}>
+                {showAllTrips ? '收起' : `展开全部 ${closed.length} 笔`}
+              </button>
+            ) : null}
+            </>
           )}
         </div>
       ) : null}
