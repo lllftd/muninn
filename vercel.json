@@ -1,5 +1,9 @@
 {
-  "framework": null,
   "buildCommand": "npm run build",
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "functions": {
+    "api/quotes.ts": {
+      "runtime": "nodejs20.x"
+    }
+  }
 }
