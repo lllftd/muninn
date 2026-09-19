@@ -179,9 +179,8 @@ export default async function handler(event) {
     body = { bars, splits }
   }
 
-  return {
-    statusCode: 200,
+  return new Response(JSON.stringify(body), {
+    status: 200,
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify(body),
-  }
+  })
 }
