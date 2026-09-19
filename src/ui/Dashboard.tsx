@@ -4,7 +4,7 @@ import { AreaDrawdown, CaptureBar, MaeBar, MultiLine, Scatter, Stat } from './ch
 import { InsightDrawer, coverageLabel, type Insight } from './InsightDrawer.tsx'
 import { PathDrawer } from './PathDrawer.tsx'
 import { TABS, tabFromView, viewOf, type Tab } from './views.ts'
-import { ciText, clsPnl, finiteNum, holdLabel, money, moneyAbs, pct, pctPlain, signed } from '../lib/format.ts'
+import { ciText, clsPnl, finiteNum, holdLabel, money, moneyAbs, moneyK, pct, pctPlain, signed } from '../lib/format.ts'
 import { etDateKey, etParts } from '../lib/time.ts'
 import type { Book, CoverageRow, EquityPoint, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
 
@@ -209,6 +209,207 @@ function dayRet(eq: EquityPoint[], i: number): number | null {
   return prev ? eq[i].index / prev - 1 : null
 }
 
+type TradeBenchRow = {
+  trip: RoundTrip
+  stockRet: number
+  spxRet: number | null
+  excess: number | null
+}
+
+function tradeBenchComparison(episodes: RoundTrip[], equity: EquityPoint[]) {
+  const benchMap = new Map<string, number>()
+  for (const e of equity) if (e.benchIndex > 0) benchMap.set(e.date, e.benchIndex)
+  const rows: TradeBenchRow[] = []
+  for (const t of episodes) {
+    if (t.status !== 'closed' || t.tags.includes('DRIP')) continue
+    if (!t.openPrice || !t.closePrice || !t.closeTime) continue
+    const stockRet = t.side === 'long' ? t.closePrice / t.openPrice - 1 : t.openPrice / t.closePrice - 1
+    const openDate = etDateKey(t.openTime)
+    const closeDate = etDateKey(t.closeTime)
+    const bo = benchMap.get(openDate)
+    const bc = benchMap.get(closeDate)
+    const spxRet = bo != null && bc != null && bo > 0 ? bc / bo - 1 : null
+    rows.push({ trip: t, stockRet, spxRet, excess: spxRet != null ? stockRet - spxRet : null })
+  }
+  const withExcess = rows.filter((r) => r.excess != null)
+  const excesses = withExcess.map((r) => r.excess as number).sort((a, b) => a - b)
+  const mid = (arr: number[]) => {
+    if (!arr.length) return null
+    const m = Math.floor(arr.length / 2)
+    return arr.length % 2 ? arr[m] : (arr[m - 1] + arr[m]) / 2
+  }
+  return {
+    rows,
+    n: rows.length,
+    beat: withExcess.filter((r) => (r.excess as number) > 0).length,
+    medianExcess: mid(excesses),
+    meanExcess: excesses.length ? excesses.reduce((s, v) => s + v, 0) / excesses.length : null,
+  }
+}
+
+function BenchUnavailablePanel(props: { missing: string[]; onSupplement: () => void }) {
+  const rows = [
+    { item: '分析起点净资产', status: props.missing.includes('capital') ? '未提供' : '已提供' },
+    { item: '外部入出金记录', status: props.missing.includes('cashflow') ? '完整性未确认' : '已确认' },
+    { item: '账户资产覆盖范围', status: props.missing.includes('subset') ? '需要确认' : '仅美股正股' },
+  ]
+  return (
+    <div className="banner cannot-prove bench-banner">
+      <strong>暂时无法进行账户级基准比较</strong>
+      <p className="tiny">
+        要回答「有没有跑赢 SPY」，需要账户净资产和完整入出金。当前缺期初净资产与完整现金流，只有正股子账本的盯市盈亏可看，不与 SPY 对拍。
+      </p>
+      <table className="grid bench-missing">
+        <thead>
+          <tr>
+            <th>所需数据</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.item}>
+              <td>{r.item}</td>
+              <td>{r.status}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="tiny">补充后可以计算：账户 TWR、XIRR、组合与 SPY 财富曲线、超额收益、Alpha 与 Beta。</p>
+      <button type="button" className="btn-primary sm" onClick={props.onSupplement}>
+        补充账户数据，启用基准比较
+      </button>
+    </div>
+  )
+}
+
+function TradeBenchPanel(props: {
+  rows: TradeBenchRow[]
+  n: number
+  beat: number
+  medianExcess: number | null
+  meanExcess: number | null
+  onOpenTrip: (trip: RoundTrip) => void
+}) {
+  const sorted = [...props.rows].sort((a, b) => (b.excess ?? -Infinity) - (a.excess ?? -Infinity))
+  return (
+    <article className="panel wide">
+      <h3>交易级基准比较</h3>
+      <p className="muted">
+        每笔闭环交易的持有期收益率 − SPY 同期收益率。这是交易级持有期比较，不是账户收益率，也不代表账户财富跑赢或跑输 SPY。
+      </p>
+      <div className="kv-grid">
+        <span>跑赢 SPY</span>
+        <b>
+          {props.beat} / {props.n} 笔
+        </b>
+        <span>中位超额收益</span>
+        <b>{props.medianExcess == null ? '—' : <span className={clsPnl(props.medianExcess)}>{pct(props.medianExcess)}</span>}</b>
+        <span>平均超额收益</span>
+        <b>{props.meanExcess == null ? '—' : <span className={clsPnl(props.meanExcess)}>{pct(props.meanExcess)}</span>}</b>
+      </div>
+      {sorted.length ? (
+        <table className="grid trips">
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>方向</th>
+              <th>股票持有期</th>
+              <th>SPY 同期</th>
+              <th>超额</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.slice(0, 15).map((r) => (
+              <tr key={r.trip.id} onClick={() => props.onOpenTrip(r.trip)} role="button" tabIndex={0}>
+                <td>
+                  <b>{r.trip.symbol}</b>
+                  <div className="muted">{r.trip.name}</div>
+                </td>
+                <td>{r.trip.side === 'long' ? '多' : '空'}</td>
+                <td className={clsPnl(r.stockRet)}>{pct(r.stockRet)}</td>
+                <td>{r.spxRet == null ? '—' : <span className={clsPnl(r.spxRet)}>{pct(r.spxRet)}</span>}</td>
+                <td>{r.excess == null ? '—' : <span className={clsPnl(r.excess)}>{pct(r.excess)}</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="tiny">没有可对拍的闭环交易（缺少基准行情或平仓价格）。</p>
+      )}
+    </article>
+  )
+}
+
+function AccountDrawer(props: {
+  initialCapital: number | null
+  busy?: boolean
+  onClose: () => void
+  onSubmit: (args: { initialCapital: number | null; cashText: string; cashflowComplete: boolean }) => void
+}) {
+  const [capital, setCapital] = useState(props.initialCapital != null ? String(props.initialCapital) : '')
+  const [cashText, setCashText] = useState('')
+  const [noCf, setNoCf] = useState(false)
+  const initial = capital.trim() ? Number(capital.replace(/,/g, '')) : null
+  return (
+    <aside className="drawer wide-drawer">
+      <button type="button" className="drawer-close" onClick={props.onClose}>
+        关闭
+      </button>
+      <h3>补充账户数据</h3>
+      <p className="tiny">
+        补填期初净资产与外部入出金后，即可计算账户 TWR、XIRR 与相对基准。文件仍在浏览器本地处理。
+      </p>
+      <label>
+        期初净资产（USD）
+        <input
+          value={capital}
+          onChange={(e) => setCapital(e.target.value)}
+          placeholder="例如 80000"
+          inputMode="decimal"
+        />
+        <span className="field-note">留空则继续只算正股盯市盈亏，不和 SPY 对拍。</span>
+      </label>
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={noCf}
+          onChange={(e) => {
+            setNoCf(e.target.checked)
+            if (e.target.checked) setCashText('')
+          }}
+        />
+        分析期间确认没有外部入出金
+      </label>
+      {!noCf ? (
+        <label className="cash">
+          或粘贴出入金 CSV
+          <textarea
+            rows={3}
+            value={cashText}
+            onChange={(e) => setCashText(e.target.value)}
+            placeholder="time,type,amount&#10;2024-03-01T09:00:00,deposit,25000"
+          />
+        </label>
+      ) : null}
+      <button
+        type="button"
+        className="btn-primary"
+        disabled={props.busy}
+        onClick={() =>
+          props.onSubmit({
+            initialCapital: initial && initial > 0 ? initial : null,
+            cashText: noCf ? '' : cashText,
+            cashflowComplete: noCf || Boolean(cashText.trim()),
+          })
+        }
+      >
+        {props.busy ? '正在重算…' : '保存并重算'}
+      </button>
+    </aside>
+  )
+}
+
 function tradeMetrics(trips: RoundTrip[]): { winRate: MetricPoint; expectancy: MetricPoint; profitFactor: MetricPoint } {
   const n = trips.length
   const wins = trips.filter((t) => t.realizedPnl > 0)
@@ -401,11 +602,13 @@ export function Dashboard(props: {
   updating?: boolean
   onReset: () => void
   onSample: () => void
+  onUpdateAccount?: (args: { initialCapital: number | null; cashText: string; cashflowComplete: boolean }) => void
 }) {
   const { book } = props
   const p = book.performance
   const [tab, setTab] = useState<Tab>(() => currentView())
   const [sort, setSort] = useState<SortKey>('time')
+  const [showAccountDrawer, setShowAccountDrawer] = useState(false)
   const [selected, setSelected] = useState<RoundTrip | null>(null)
   const [insight, setInsight] = useState<Insight | null>(null)
   const [groupReturn, setGroupReturn] = useState<Insight | null>(null)
@@ -480,7 +683,28 @@ export function Dashboard(props: {
     () => book.equity.map((e, i) => (e.cashflow ? i : -1)).filter((i) => i >= 0),
     [book.equity],
   )
-  const drawerOpen = Boolean(selected || insight)
+  const tradeBench = useMemo(() => tradeBenchComparison(book.episodes, book.equity), [book.episodes, book.equity])
+  const benchMissing = useMemo(() => {
+    const m: string[] = []
+    if (p.initialCapital == null) m.push('capital')
+    if (!p.cashflowComplete) m.push('cashflow')
+    if (p.equitySubsetOnly) m.push('subset')
+    return m
+  }, [p.initialCapital, p.cashflowComplete, p.equitySubsetOnly])
+  const sleeveMarkers = useMemo(() => {
+    if (!sleeveOk || !book.equity.length) return []
+    const peakIdx = book.equity.reduce((best, e, i) => (e.equity > book.equity[best].equity ? i : best), 0)
+    const troughIdx = book.equity.reduce((best, e, i) => (e.equity < book.equity[best].equity ? i : best), 0)
+    const out: Array<{ i: number; value: number; text: string; tone?: 'up' | 'down' }> = []
+    if (book.equity[peakIdx].equity > 0) {
+      out.push({ i: peakIdx, value: book.equity[peakIdx].equity, text: `峰值 ${moneyK(book.equity[peakIdx].equity)}`, tone: 'up' })
+    }
+    if (book.equity[troughIdx].equity < 0) {
+      out.push({ i: troughIdx, value: book.equity[troughIdx].equity, text: `谷底 ${moneyK(book.equity[troughIdx].equity)}`, tone: 'down' })
+    }
+    return out
+  }, [sleeveOk, book.equity])
+  const drawerOpen = Boolean(selected || insight || showAccountDrawer)
 
   const openInsight = (nextInsight: Insight) => {
     setSelected(null)
@@ -499,6 +723,12 @@ export function Dashboard(props: {
     }
   }
   const pickCoverage = (row: CoverageRow) => openInsight({ kind: 'coverage', row })
+  const openAccountSupplement = () => {
+    setSelected(null)
+    setInsight(null)
+    setGroupReturn(null)
+    setShowAccountDrawer(true)
+  }
   const clearFilters = () => {
     setSideFilter('all')
     setSymbolFilter([])
@@ -509,23 +739,31 @@ export function Dashboard(props: {
     <>
       <Stat
         k={<span className="hint">XIRR（年化）</span>}
-        v={p.xirr == null ? 'N/A' : signedPct(p.xirr)}
-        sub={p.xirrReason || '整本账 · 含入出金'}
-        tip="按你实际投进去、拿出来的钱算的年化回报。没有完整入出金时不猜，显示 N/A。"
-        onClick={() => openInsight({ kind: 'xirr' })}
+        v={p.xirr == null ? '待补数据' : signedPct(p.xirr)}
+        tone={p.xirr == null ? 'na' : undefined}
+        sub={p.xirr == null ? '缺少期初净资产或完整入出金 · 立即补充 →' : p.xirrReason || '整本账 · 含入出金'}
+        tip={
+          p.xirr == null
+            ? '补填期初净资产与完整入出金后才能计算 XIRR。缺失不等于零，也不猜。'
+            : '按你实际投进去、拿出来的钱算的年化回报。没有完整入出金时不猜。'
+        }
+        onClick={() => (p.xirr == null ? openAccountSupplement() : openInsight({ kind: 'xirr' }))}
       />
       <Stat
         k={<span className="hint">相对基准财富</span>}
-        v={signedPct(p.relativeSpx)}
+        v={p.relativeSpx == null ? '待补数据' : signedPct(p.relativeSpx)}
+        tone={p.relativeSpx == null ? 'na' : undefined}
         sub={
-          accountOk
-            ? p.benchKind === 'spy-total-return'
-              ? '账户级 · SPY 全收益'
-              : '账户级 · SPX 价格指数，不含股息'
-            : '要对拍基准需要账户收益率'
+          p.relativeSpx == null
+            ? '要对拍基准需要账户收益率 · 立即补充 →'
+            : accountOk
+              ? p.benchKind === 'spy-total-return'
+                ? '账户级 · SPY 全收益'
+                : '账户级 · SPX 价格指数，不含股息'
+              : '账户级'
         }
         tip="把你的账户财富和基准从同一天滚到现在，看谁涨得多。优先用 SPY 复权全收益；没有 SPY 时改用 SPX 价格指数，不含股息。不是两个收益率直接相减。"
-        onClick={() => openInsight({ kind: 'spx' })}
+        onClick={() => (p.relativeSpx == null ? openAccountSupplement() : openInsight({ kind: 'spx' }))}
       />
     </>
   )
@@ -1137,140 +1375,179 @@ export function Dashboard(props: {
       ) : null}
 
       {tab === 'bench' ? (
-        <div className="grid-2">
-          <article className="panel wide">
-            <h3>{accountOk ? '三条财富曲线' : '正股盯市盈亏'}</h3>
-            <p className="muted">
-              {accountOk
-                ? '三条线都是财富指数，起点=1.00，已剥离出入金。现金为虚线，基准为灰实线。优先 SPY 复权全收益；没有 SPY 时用 SPX 价格指数（不含股息）。'
-                : sleeveOk
-                  ? '美元盯市盈亏，起点 0。没有日线时用最近成交价计价。这不是账户财富曲线，也不和 SPY 对拍。'
-                  : naReason}
-            </p>
-            {fail ? (
-              <p className="tiny">路径校验未通过，本图禁用，避免把错误财富曲线当成账户收益。</p>
-            ) : accountOk && book.equity.length ? (
-              <div className="chart-wrap tall">
-                <MultiLine
-                  height={260}
-                  baseline={100}
-                  cursor={cursor}
-                  range={range}
-                  marks={cfMarks}
-                  onCursor={setCursor}
-                  onRange={setRange}
-                  series={[
-                    { values: book.equity.map((e) => e.cashIndex), color: 'var(--t3)', width: 1.2, dash: '5 4' },
-                    { values: book.equity.map((e) => e.benchIndex), color: 'var(--t2)', width: 1.4 },
-                    { values: book.equity.map((e) => e.index), color: 'var(--gold)', fill: 'var(--gold-fill)', width: 2 },
-                  ]}
-                />
-                {hover ? (
-                  <div className="chart-tip">
-                    <b>{hover.date}</b>
-                    <span>账户财富 {(hover.index / 100).toFixed(3)}</span>
-                    <span>基准财富 {(hover.benchIndex / 100).toFixed(3)}</span>
-                    <span>相对财富比 {hover.benchIndex ? pct(hover.index / hover.benchIndex - 1) : '—'}</span>
-                    <span>当日收益 {dayRet(book.equity, cursor ?? 0) == null ? '—' : pct(dayRet(book.equity, cursor ?? 0)!)}</span>
-                    <span>净现金流 {hover.cashflow ? money(hover.cashflow) : '$0'}</span>
-                    <span>回撤 {pct(hover.drawdown)}</span>
-                    <span>净敞口 {pctPlain(hover.netExposure, 1)}</span>
-                  </div>
+        <div className="bench">
+          {!accountOk ? <BenchUnavailablePanel missing={benchMissing} onSupplement={openAccountSupplement} /> : null}
+          <div className="grid-2">
+            <article className="panel wide">
+              <h3>
+                {accountOk ? '三条财富曲线' : '正股交易子账本盈亏走势'}
+                {!accountOk && sleeveOk ? (
+                  <span className="pill" style={{ marginLeft: 8 }}>
+                    子账本口径 · 包含估算值
+                  </span>
                 ) : null}
-              </div>
-            ) : sleeveOk ? (
-              <div className="chart-wrap tall">
-                <MultiLine
-                  height={260}
-                  baseline={0}
-                  cursor={cursor}
-                  range={range}
-                  marks={cfMarks}
-                  onCursor={setCursor}
-                  onRange={setRange}
-                  series={[{ values: book.equity.map((e) => e.equity), color: 'var(--gold)', fill: 'var(--gold-fill)', width: 2 }]}
-                />
-                {hover ? (
-                  <div className="chart-tip">
-                    <b>{hover.date}</b>
-                    <span>盯市盈亏 {money(hover.equity)}</span>
-                    <span>现金 {money(hover.cash)}</span>
-                    <span>未实现 {money(hover.mtm)}</span>
-                    <span>回撤 {pct(hover.drawdown)}</span>
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <p className="tiny">还没有可画的正股路径。</p>
-            )}
-            {range && range.hi !== range.lo ? (
-              <p className="tiny">
-                已框选 {book.equity[range.lo]?.date} 至 {book.equity[range.hi]?.date}。交易级指标按开仓日筛选；账户级 TWR / XIRR /
-                回撤不重算。
-                <button type="button" className="link" onClick={() => setRange(null)}>
-                  重置范围
-                </button>
+              </h3>
+              <p className="muted">
+                {accountOk
+                  ? '三条线都是财富指数，起点=1.00，已剥离出入金。现金为虚线，基准为灰实线。优先 SPY 复权全收益；没有 SPY 时用 SPX 价格指数（不含股息）。'
+                  : sleeveOk
+                    ? '展示已导入正股交易产生的累计盯市盈亏，不代表完整账户收益。缺少历史价格的日期使用最近可用价格估算。'
+                    : naReason}
               </p>
-            ) : (
-              <p className="tiny">在图上拖动可框选查看区间。现金流日期有浅色标记。</p>
-            )}
-          </article>
-          <article className="panel">
-            <h3>相对基准财富</h3>
-            <p className="muted">
-              {accountOk
-                ? p.benchKind === 'spy-total-return'
-                  ? '∏(1+rp)/∏(1+rb)−1，基准为 SPY 复权全收益。'
-                  : '∏(1+rp)/∏(1+rb)−1，基准为 SPX 价格指数，不含股息。'
-                : naReason}
-            </p>
-            <div className="kv-grid">
-              <span>相对现金</span>
-              <b>{signedPct(p.relativeCash)}</b>
-              <span>相对基准财富</span>
-              <b>
-                <button type="button" className="link" onClick={() => openInsight({ kind: 'spx' })}>
-                  {signedPct(p.relativeSpx)}
-                </button>
-              </b>
-            </div>
-          </article>
-          <article className="panel">
-            <h3>Alpha 诊断</h3>
-            <p className="muted">日收益回归截距的年化估计，不等于累计相对收益。样本不足时不说「有正 alpha」。</p>
-            {!accountOk ? (
-              <p className="tiny">{naReason}</p>
-            ) : !p.alpha || !p.alpha.valid ? (
-              <p className="tiny">{p.alpha?.invalidReason || '暂不可用：回归序列未通过一致性校验。'}</p>
-            ) : (
-              <div className="kv-grid">
-                <span>对齐后的日收益 n</span>
-                <b>
-                  {p.alpha.n} · {p.alpha.start} → {p.alpha.end}
-                </b>
-                <span>年化 α 点估计</span>
-                <b>{p.closedCount >= 30 ? pct(p.alpha.annualized) : `${pct(p.alpha.annualized)}（仅点估计）`}</b>
-                <span>标准误 / 95% 区间</span>
-                <b>
-                  {pct(p.alpha.se)} · {pct(p.alpha.ciLo)} – {pct(p.alpha.ciHi)}
-                </b>
-                <span>β / 标准误</span>
-                <b>
-                  {p.alpha.beta.toFixed(2)} / {p.alpha.betaSe.toFixed(2)}
-                </b>
-                <span>R²</span>
-                <b>{p.alpha.r2.toFixed(2)}</b>
-                <span>无风险利率</span>
-                <b>{p.alpha.rfSource}</b>
-                <span>频率 / 年化 / 标准误</span>
-                <b>
-                  {p.alpha.freq} · ×252 · {p.alpha.seMethod}
-                </b>
-                <span>口径</span>
-                <b className="tiny">{p.alpha.basis}</b>
-              </div>
-            )}
-          </article>
+              {fail ? (
+                <p className="tiny">路径校验未通过，本图禁用，避免把错误财富曲线当成账户收益。</p>
+              ) : accountOk && book.equity.length ? (
+                <div className="chart-wrap tall">
+                  <MultiLine
+                    height={260}
+                    baseline={100}
+                    cursor={cursor}
+                    range={range}
+                    marks={cfMarks}
+                    dates={book.equity.map((e) => e.date)}
+                    onCursor={setCursor}
+                    onRange={setRange}
+                    series={[
+                      { values: book.equity.map((e) => e.cashIndex), color: 'var(--t3)', width: 1.2, dash: '5 4' },
+                      { values: book.equity.map((e) => e.benchIndex), color: 'var(--t2)', width: 1.4 },
+                      { values: book.equity.map((e) => e.index), color: 'var(--gold)', fill: 'var(--gold-fill)', width: 2 },
+                    ]}
+                  />
+                  {hover ? (
+                    <div className="chart-tip">
+                      <b>{hover.date}</b>
+                      <span>账户财富 {(hover.index / 100).toFixed(3)}</span>
+                      <span>基准财富 {(hover.benchIndex / 100).toFixed(3)}</span>
+                      <span>相对财富比 {hover.benchIndex ? pct(hover.index / hover.benchIndex - 1) : '—'}</span>
+                      <span>当日收益 {dayRet(book.equity, cursor ?? 0) == null ? '—' : pct(dayRet(book.equity, cursor ?? 0)!)}</span>
+                      <span>净现金流 {hover.cashflow ? money(hover.cashflow) : '$0'}</span>
+                      <span>回撤 {pct(hover.drawdown)}</span>
+                      <span>净敞口 {pctPlain(hover.netExposure, 1)}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : sleeveOk ? (
+                <div className="chart-wrap tall">
+                  <MultiLine
+                    height={260}
+                    baseline={0}
+                    tickFormat={moneyK}
+                    dates={book.equity.map((e) => e.date)}
+                    zeroFill
+                    endLabel={{ value: book.equity.at(-1)!.equity, text: `当前 ${money(book.equity.at(-1)!.equity)}` }}
+                    markers={sleeveMarkers}
+                    cursor={cursor}
+                    range={range}
+                    marks={cfMarks}
+                    onCursor={setCursor}
+                    onRange={setRange}
+                    series={[{ values: book.equity.map((e) => e.equity), color: 'var(--gold)', width: 2 }]}
+                  />
+                  {hover ? (
+                    <div className="chart-tip">
+                      <b>{hover.date}</b>
+                      <span>盯市盈亏 {money(hover.equity)}</span>
+                      <span>现金 {money(hover.cash)}</span>
+                      <span>未实现 {money(hover.mtm)}</span>
+                      <span>回撤 {pct(hover.drawdown)}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="tiny">还没有可画的正股路径。</p>
+              )}
+              {range && range.hi !== range.lo ? (
+                <p className="tiny">
+                  已框选 {book.equity[range.lo]?.date} 至 {book.equity[range.hi]?.date}。交易级指标按开仓日筛选；账户级 TWR / XIRR /
+                  回撤不重算。
+                  <button type="button" className="link" onClick={() => setRange(null)}>
+                    重置范围
+                  </button>
+                </p>
+              ) : (
+                <p className="tiny">在图上拖动可框选查看区间。现金流日期有浅色标记。</p>
+              )}
+            </article>
+            <article className="panel">
+              <h3>基准结果</h3>
+              {accountOk ? (
+                <>
+                  <p className="muted">
+                    {p.benchKind === 'spy-total-return'
+                      ? '∏(1+rp)/∏(1+rb)−1，基准为 SPY 复权全收益。'
+                      : '∏(1+rp)/∏(1+rb)−1，基准为 SPX 价格指数，不含股息。'}
+                  </p>
+                  <div className="kv-grid">
+                    <span>账户终值</span>
+                    <b>{p.finalEquity == null ? 'N/A' : moneyAbs(p.finalEquity)}</b>
+                    <span>相对持有现金</span>
+                    <b>{signedPct(p.relativeCash)}</b>
+                    <span>相对基准财富</span>
+                    <b>
+                      <button type="button" className="link" onClick={() => openInsight({ kind: 'spx' })}>
+                        {signedPct(p.relativeSpx)}
+                      </button>
+                    </b>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="tiny">缺少期初净资产和完整现金流，账户终值与相对基准暂不可计算。</p>
+                  <button type="button" className="ghost sm" onClick={openAccountSupplement}>
+                    补充账户数据
+                  </button>
+                </>
+              )}
+            </article>
+            <article className="panel">
+              <h3>超额收益诊断（Alpha）</h3>
+              {!accountOk ? (
+                <p className="tiny">补充账户数据后，将估计无法由市场涨跌解释的年化收益，并同时展示 Beta 与拟合可信度。</p>
+              ) : !p.alpha || !p.alpha.valid ? (
+                <p className="tiny">{p.alpha?.invalidReason || '暂不可用：回归序列未通过一致性校验。'}</p>
+              ) : (
+                <>
+                  <p className="muted">需要账户日收益序列与同期基准；结果是回归估计，不等同于实际累计超额收益。</p>
+                  <div className="kv-grid">
+                    <span>对齐后的日收益 n</span>
+                    <b>
+                      {p.alpha.n} · {p.alpha.start} → {p.alpha.end}
+                    </b>
+                    <span>年化 α 点估计</span>
+                    <b>{p.closedCount >= 30 ? pct(p.alpha.annualized) : `${pct(p.alpha.annualized)}（仅点估计）`}</b>
+                    <span>标准误 / 95% 区间</span>
+                    <b>
+                      {pct(p.alpha.se)} · {pct(p.alpha.ciLo)} – {pct(p.alpha.ciHi)}
+                    </b>
+                    <span>β / 标准误</span>
+                    <b>
+                      {p.alpha.beta.toFixed(2)} / {p.alpha.betaSe.toFixed(2)}
+                    </b>
+                    <span>R²</span>
+                    <b>{p.alpha.r2.toFixed(2)}</b>
+                    <span>无风险利率</span>
+                    <b>{p.alpha.rfSource}</b>
+                    <span>频率 / 年化 / 标准误</span>
+                    <b>
+                      {p.alpha.freq} · ×252 · {p.alpha.seMethod}
+                    </b>
+                    <span>口径</span>
+                    <b className="tiny">{p.alpha.basis}</b>
+                  </div>
+                </>
+              )}
+            </article>
+          </div>
+          {!accountOk ? (
+            <TradeBenchPanel
+              rows={tradeBench.rows}
+              n={tradeBench.n}
+              beat={tradeBench.beat}
+              medianExcess={tradeBench.medianExcess}
+              meanExcess={tradeBench.meanExcess}
+              onOpenTrip={openTrip}
+            />
+          ) : null}
         </div>
       ) : null}
 
@@ -1586,6 +1863,17 @@ export function Dashboard(props: {
           onGo={(nextTab) => {
             go(nextTab)
             setInsight(null)
+          }}
+        />
+      ) : null}
+      {!selected && showAccountDrawer ? (
+        <AccountDrawer
+          initialCapital={p.initialCapital}
+          busy={props.updating}
+          onClose={() => setShowAccountDrawer(false)}
+          onSubmit={(args) => {
+            setShowAccountDrawer(false)
+            props.onUpdateAccount?.(args)
           }}
         />
       ) : null}

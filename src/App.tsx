@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { assembleBook } from './engine/book.ts'
 import { importFutu } from './engine/futu.ts'
 import { REAL_FILLS_CSV, REAL_ORDERS_CSV } from './fixtures/sampleBook.ts'
@@ -7,7 +7,7 @@ import { Dashboard } from './ui/Dashboard.tsx'
 import { Landing } from './ui/Landing.tsx'
 import { etDateKey } from './lib/time.ts'
 import { METRIC_VERSION } from './types.ts'
-import type { Book } from './types.ts'
+import type { Book, QuotePack } from './types.ts'
 
 const STAGES = ['正在校验现金流', '正在重建账户日收益', '正在对齐基准和无风险利率', '正在运行 Bootstrap']
 
@@ -21,6 +21,13 @@ export default function App() {
   const [updating, setUpdating] = useState(false)
   const [stage, setStage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const lastContext = useRef<{
+    fillText: string
+    orderText: string
+    quotes: QuotePack
+    accountName: string
+    isSample: boolean
+  } | null>(null)
 
   const runUpload = useCallback(
     async (args: {
@@ -62,6 +69,13 @@ export default function App() {
           cashflowComplete: args.cashflowComplete,
           isSample: !!args.isSample,
         })
+        lastContext.current = {
+          fillText: args.fillText,
+          orderText: args.orderText,
+          quotes,
+          accountName: args.accountName,
+          isSample: !!args.isSample,
+        }
         setBook(next)
         setStage(
           next.performance.hasNav
@@ -78,6 +92,43 @@ export default function App() {
       }
     },
     [book],
+  )
+
+  const updateAccount = useCallback(
+    async (args: { initialCapital: number | null; cashText: string; cashflowComplete: boolean }) => {
+      const ctx = lastContext.current
+      if (!ctx) return
+      setBusy(true)
+      setUpdating(true)
+      setError(null)
+      try {
+        setStage('正在重建账户日收益')
+        await sleep(120)
+        const next = assembleBook({
+          fillText: ctx.fillText,
+          orderText: ctx.orderText,
+          cashText: args.cashText,
+          accountName: ctx.accountName,
+          initialCapital: args.initialCapital && args.initialCapital > 0 ? args.initialCapital : null,
+          quotes: ctx.quotes,
+          cashflowComplete: args.cashflowComplete,
+          isSample: ctx.isSample,
+        })
+        setBook(next)
+        setStage(
+          next.performance.hasNav
+            ? `计算完成 · 口径版本 ${METRIC_VERSION}`
+            : '交易层完成 · 账户层受限',
+        )
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '更新失败')
+        setStage('部分模块更新失败，已保留上一份结果')
+      } finally {
+        setBusy(false)
+        setUpdating(false)
+      }
+    },
+    [],
   )
 
   const loadRealSample = useCallback(() => {
@@ -110,11 +161,13 @@ export default function App() {
       stage={stage}
       updating={updating}
       onReset={() => {
+        lastContext.current = null
         setBook(null)
         setStage(null)
         setError(null)
       }}
       onSample={loadRealSample}
+      onUpdateAccount={updateAccount}
     />
   )
 }

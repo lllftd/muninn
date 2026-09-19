@@ -50,6 +50,26 @@ function niceTicks(min: number, max: number, count = 4): number[] {
   return [...new Set(ticks)].sort((a, b) => a - b)
 }
 
+function dateTickLabels(dates: string[], n: number): Array<{ i: number; label: string }> {
+  if (!n || !dates.length) return []
+  const step = Math.max(1, Math.floor(n / 6))
+  const out: Array<{ i: number; label: string }> = []
+  let prev = ''
+  for (let i = 0; i < n; i += step) {
+    const label = (dates[i] || '').slice(0, 7)
+    if (label && label !== prev) {
+      out.push({ i, label })
+      prev = label
+    }
+  }
+  const lastI = n - 1
+  const lastLabel = (dates[lastI] || '').slice(0, 7)
+  if (lastLabel && out.length && out[out.length - 1].i !== lastI && lastLabel !== out[out.length - 1].label) {
+    out.push({ i: lastI, label: lastLabel })
+  }
+  return out
+}
+
 export function MultiLine(props: {
   height: number
   series: Array<{ values: number[]; color: string; fill?: string; width?: number; dash?: string }>
@@ -59,6 +79,11 @@ export function MultiLine(props: {
   baseline?: number
   onCursor?: (i: number | null) => void
   onRange?: (range: { lo: number; hi: number } | null) => void
+  tickFormat?: (v: number) => string
+  dates?: string[]
+  endLabel?: { value: number; text: string }
+  markers?: Array<{ i: number; value: number; text: string; tone?: 'up' | 'down' }>
+  zeroFill?: boolean
 }) {
   const w = 640
   const h = props.height
@@ -77,73 +102,79 @@ export function MultiLine(props: {
   const xAt = (i: number) => pad.l + (i / Math.max(n - 1, 1)) * innerW
   const yPx = (v: number) => pad.t + (1 - (v - yMin) / span) * innerH
   const yPct = (v: number) => `${((v - yMin) / span) * 100}%`
+  const xPct = (i: number) => `${(xAt(i) / w) * 100}%`
+  const yTopPct = (v: number) => `${(yPx(v) / h) * 100}%`
+  const fmtTick = props.tickFormat ?? ((t: number) => (t / 100).toFixed(2))
   const origin = useRef<number | null>(null)
   const ticks = niceTicks(yMin + padAmt * 0.15, yMax - padAmt * 0.15)
+  const dates = props.dates && props.dates.length === n ? dateTickLabels(props.dates, n) : []
   const pathFor = (values: number[]) => {
     const xs = values.map((_, i) => xAt(i))
     return xs.map((x, i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${yPx(values[i]).toFixed(1)}`).join(' ')
   }
+  const areaFor = (values: number[], base: number) => {
+    const d = pathFor(values)
+    const baseY = yPx(base)
+    return `${d} L${xAt(Math.max(values.length - 1, 0))},${baseY} L${xAt(0)},${baseY} Z`
+  }
   return (
     <div className="ml-chart">
-      <div className="ml-y" aria-hidden>
-        {ticks.map((t) => (
-          <span key={t} style={{ bottom: yPct(t) }}>
-            {(t / 100).toFixed(2)}
-          </span>
-        ))}
-      </div>
-      <svg
-        viewBox={`0 0 ${w} ${h}`}
-        className="chart interactive"
-        preserveAspectRatio="none"
-        onPointerLeave={() => {
-          origin.current = null
-          props.onCursor?.(null)
-        }}
-        onPointerUp={() => {
-          origin.current = null
-        }}
-        onPointerMove={(e) => {
-          if (!n) return
-          const i = cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, pad.l, innerW, w)
-          props.onCursor?.(i)
-          if (e.buttons === 1 && origin.current != null) {
-            props.onRange?.({ lo: Math.min(origin.current, i), hi: Math.max(origin.current, i) })
-          }
-        }}
-        onPointerDown={(e) => {
-          if (!n) return
-          const i = cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, pad.l, innerW, w)
-          origin.current = i
-          props.onCursor?.(i)
-        }}
-      >
-        {ticks.map((t) => (
-          <line
-            key={t}
-            x1={pad.l}
-            x2={w - pad.r}
-            y1={yPx(t)}
-            y2={yPx(t)}
-            className={Math.abs(t - baseline) < 1e-6 ? 'base-line' : 'grid'}
-          />
-        ))}
-        {props.range && props.range.hi !== props.range.lo ? (
-          <rect
-            x={xAt(props.range.lo)}
-            y={pad.t}
-            width={Math.max(1, xAt(props.range.hi) - xAt(props.range.lo))}
-            height={innerH}
-            fill="var(--gold-fill)"
-          />
-        ) : null}
-        {props.series.map((s, i) => {
-          const d = pathFor(s.values)
-          const baseY = yPx(baseline)
-          const area = `${d} L${xAt(Math.max(s.values.length - 1, 0))},${baseY} L${xAt(0)},${baseY} Z`
-          return (
-            <g key={i}>
-              {s.fill ? <path d={area} fill={s.fill} /> : null}
+      <div className="ml-body">
+        <div className="ml-y" aria-hidden>
+          {ticks.map((t) => (
+            <span key={t} style={{ bottom: yPct(t) }}>
+              {fmtTick(t)}
+            </span>
+          ))}
+        </div>
+        <svg
+          viewBox={`0 0 ${w} ${h}`}
+          className="chart interactive"
+          preserveAspectRatio="none"
+          onPointerLeave={() => {
+            origin.current = null
+            props.onCursor?.(null)
+          }}
+          onPointerUp={() => {
+            origin.current = null
+          }}
+          onPointerMove={(e) => {
+            if (!n) return
+            const i = cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, pad.l, innerW, w)
+            props.onCursor?.(i)
+            if (e.buttons === 1 && origin.current != null) {
+              props.onRange?.({ lo: Math.min(origin.current, i), hi: Math.max(origin.current, i) })
+            }
+          }}
+          onPointerDown={(e) => {
+            if (!n) return
+            const i = cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, pad.l, innerW, w)
+            origin.current = i
+            props.onCursor?.(i)
+          }}
+        >
+          {ticks.map((t) => (
+            <line
+              key={t}
+              x1={pad.l}
+              x2={w - pad.r}
+              y1={yPx(t)}
+              y2={yPx(t)}
+              className={Math.abs(t - baseline) < 1e-6 ? 'base-line' : 'grid'}
+            />
+          ))}
+          {props.range && props.range.hi !== props.range.lo ? (
+            <rect
+              x={xAt(props.range.lo)}
+              y={pad.t}
+              width={Math.max(1, xAt(props.range.hi) - xAt(props.range.lo))}
+              height={innerH}
+              fill="var(--gold-fill)"
+            />
+          ) : null}
+          {props.series.map((s, i) => {
+            const d = pathFor(s.values)
+            const line = (
               <path
                 d={d}
                 fill="none"
@@ -152,16 +183,50 @@ export function MultiLine(props: {
                 strokeDasharray={s.dash}
                 vectorEffect="nonScalingStroke"
               />
-            </g>
-          )
-        })}
-        {(props.marks || []).map((i) => (
-          <line key={i} x1={xAt(i)} x2={xAt(i)} y1={pad.t} y2={pad.t + innerH} className="cf-mark" />
+            )
+            if (props.zeroFill && baseline === 0) {
+              return (
+                <g key={i}>
+                  <path d={areaFor(s.values.map((v) => Math.max(v, 0)), 0)} fill="var(--up-fill)" />
+                  <path d={areaFor(s.values.map((v) => Math.min(v, 0)), 0)} fill="var(--down-fill)" />
+                  {line}
+                </g>
+              )
+            }
+            return (
+              <g key={i}>
+                {s.fill ? <path d={areaFor(s.values, baseline)} fill={s.fill} /> : null}
+                {line}
+              </g>
+            )
+          })}
+          {(props.marks || []).map((i) => (
+            <line key={i} x1={xAt(i)} x2={xAt(i)} y1={pad.t} y2={pad.t + innerH} className="cf-mark" />
+          ))}
+          {props.cursor != null && n ? (
+            <line x1={xAt(props.cursor)} x2={xAt(props.cursor)} y1={pad.t} y2={pad.t + innerH} className="cursor-line" />
+          ) : null}
+        </svg>
+        {props.markers?.map((m) => (
+          <span key={m.i} className={`ml-mark ${m.tone || ''}`} style={{ left: xPct(m.i), top: yTopPct(m.value) }}>
+            {m.text}
+          </span>
         ))}
-        {props.cursor != null && n ? (
-          <line x1={xAt(props.cursor)} x2={xAt(props.cursor)} y1={pad.t} y2={pad.t + innerH} className="cursor-line" />
+        {props.endLabel ? (
+          <span className="ml-end" style={{ left: xPct(n - 1), top: yTopPct(props.endLabel.value) }}>
+            {props.endLabel.text}
+          </span>
         ) : null}
-      </svg>
+      </div>
+      {dates.length ? (
+        <div className="ml-x" aria-hidden>
+          {dates.map((d) => (
+            <span key={d.i} style={{ left: xPct(d.i) }}>
+              {d.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }

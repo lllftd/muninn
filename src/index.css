@@ -30,6 +30,7 @@ html[data-theme='dark'] {
   --tag-text: #f0b3b8;
   --gold-fill: rgba(230, 194, 122, 0.12);
   --down-fill: rgba(244, 91, 105, 0.18);
+  --up-fill: rgba(62, 207, 142, 0.14);
   --mae-mid: #9aa0ad;
 }
 html[data-theme='light'] {
@@ -63,6 +64,7 @@ html[data-theme='light'] {
   --tag-text: #b54a54;
   --gold-fill: rgba(184, 137, 45, 0.12);
   --down-fill: rgba(214, 69, 80, 0.14);
+  --up-fill: rgba(28, 154, 100, 0.14);
   --mae-mid: #9aa0ad;
 }
 * { box-sizing: border-box; }
@@ -538,10 +540,10 @@ tr.low-n { opacity: 0.8; }
 .ml-chart .chart { width: 100%; }
 .ml-y {
   position: absolute;
-  left: 0;
+  left: -40px;
   top: 3.8%;
   bottom: 6.9%;
-  width: 38px;
+  width: 40px;
   pointer-events: none;
 }
 .ml-y span {
@@ -552,6 +554,38 @@ tr.low-n { opacity: 0.8; }
   color: var(--t3);
   font-variant-numeric: tabular-nums;
 }
+.ml-body { position: relative; }
+.ml-mark, .ml-end {
+  position: absolute;
+  transform: translate(-50%, -140%);
+  font-size: 10.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  color: var(--t2);
+  font-variant-numeric: tabular-nums;
+}
+.ml-mark.up { color: var(--up); }
+.ml-mark.down { color: var(--down); }
+.ml-end {
+  transform: translate(-100%, -140%);
+  color: var(--t1);
+  font-weight: 600;
+}
+.ml-x { position: relative; height: 16px; margin-top: 2px; }
+.ml-x span {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  color: var(--t3);
+  font-variant-numeric: tabular-nums;
+}
+.bench { display: flex; flex-direction: column; gap: 12px; }
+.bench-banner { text-align: left; }
+.bench-banner .btn-primary { margin-top: 10px; }
+.bench-missing { max-width: 380px; margin: 8px 0; }
+.bench-missing th, .bench-missing td { padding: 6px 6px; }
+.stat .v.na { color: var(--t3); font-size: 18px; }
 .chart .base-line {
   stroke: var(--line2);
   stroke-width: 1;

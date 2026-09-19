@@ -33,6 +33,14 @@ export function moneyAbs(n: number, digits = 0): string {
   })}`
 }
 
+export function moneyK(n: number): string {
+  const abs = Math.abs(n)
+  const sign = n > 0 ? '+' : n < 0 ? '-' : ''
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(abs >= 1e7 ? 0 : 1)}M`
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(abs >= 1e5 ? 0 : 1)}k`
+  return `${sign}$${abs.toFixed(0)}`
+}
+
 export function pct(n: number, digits = 1): string {
   const s = `${Math.abs(n * 100).toFixed(digits)}%`
   if (n > 0) return `+${s}`
