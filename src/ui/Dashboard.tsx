@@ -458,83 +458,75 @@ function EdgePanel(props: {
   if (wr == null || payoff == null || !(payoff > 0)) return null
   const be = 1 / (1 + payoff)
   const hasEdge = wr >= be
+  const gapPp = (wr - be) * 100
   const pfText = pf != null && Number.isFinite(pf) ? pf.toFixed(2) : '—'
   const expText = exp != null ? money(exp) : '—'
+  const max = Math.max(0.3, be * 1.6, wr * 1.6)
+  const pctOf = (v: number) => `${(v / max) * 100}%`
   return (
     <article className="panel">
       <h3>交易优势诊断</h3>
-      <p style={{ margin: '2px 0 8px', fontWeight: 600, color: hasEdge ? 'var(--up)' : 'var(--down)' }}>
-        {hasEdge ? '胜率高于盈亏平衡线，样本显示正向优势' : '当前样本尚未显示稳定的正向优势'}
+      <p style={{ margin: '0 0 4px', fontWeight: 650, color: hasEdge ? 'var(--up)' : 'var(--down)' }}>
+        {hasEdge ? '胜率高于盈亏平衡线' : '当前尚未达到盈亏平衡'}
       </p>
       <p className="tiny" style={{ marginBottom: 10 }}>
-        实际胜率 {pctPlain(wr, 0)}，盈亏平衡胜率 {pctPlain(be, 1)}；Profit Factor {pfText}，单笔期望 {expText}。
+        实际胜率 {pctPlain(wr, 0)}，盈亏平衡胜率 {pctPlain(be, 1)}；差距 {gapPp >= 0 ? '+' : ''}
+        {gapPp.toFixed(1)} pp · PF {pfText} · 历史单笔均值 {expText}。
       </p>
-      <div style={{ position: 'relative', height: 18, background: 'var(--line2)', borderRadius: 9, marginBottom: 6 }}>
-        <div
-          style={{
-            position: 'absolute',
-            left: 0,
-            top: 0,
-            height: 18,
-            width: `${Math.min(wr * 100, 100)}%`,
-            background: 'var(--gold)',
-            borderRadius: 9,
-          }}
-        />
-        <div
-          style={{
-            position: 'absolute',
-            left: `${Math.min(be * 100, 100)}%`,
-            top: -4,
-            width: 2,
-            height: 26,
-            background: 'var(--down)',
-          }}
-          title={`盈亏平衡 ${pctPlain(be, 1)}`}
-        />
+      <div className="edge-track">
+        <div className="edge-fill" style={{ width: pctOf(wr) }} />
+        <div className="edge-be" style={{ left: pctOf(be) }} title={`盈亏平衡 ${pctPlain(be, 1)}`} />
       </div>
       <div className="tiny" style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span>实际胜率 {pctPlain(wr, 0)}</span>
-        <span>盈亏平衡线 {pctPlain(be, 1)}</span>
+        <span>0%</span>
+        <span>实际 {pctPlain(wr, 0)}</span>
+        <span>盈亏平衡 {pctPlain(be, 1)}</span>
+        <span>{pctPlain(max, 0)}</span>
       </div>
     </article>
   )
 }
 
 function PnLBySymbol(props: { trips: RoundTrip[] }) {
+  const [showAll, setShowAll] = useState(false)
   const bySym = new Map<string, number>()
   for (const t of props.trips) bySym.set(t.symbol, (bySym.get(t.symbol) || 0) + t.realizedPnl)
   const rows = [...bySym.entries()].map(([symbol, pnl]) => ({ symbol, pnl })).sort((a, b) => b.pnl - a.pnl)
   if (!rows.length) return null
   const maxAbs = Math.max(...rows.map((r) => Math.abs(r.pnl)), 1)
   const wins = rows.filter((r) => r.pnl > 0)
-  const losses = rows.filter((r) => r.pnl < 0).reverse()
-  const bar = (r: { symbol: string; pnl: number }) => (
-    <div key={r.symbol} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-      <span style={{ width: 52, textAlign: 'right', fontSize: 12 }}>{r.symbol}</span>
-      <div style={{ flex: 1, position: 'relative', height: 10, background: 'var(--line2)', borderRadius: 5 }}>
-        <div
-          style={{
-            position: 'absolute',
-            left: 0,
-            top: 0,
-            height: 10,
-            width: `${(Math.abs(r.pnl) / maxAbs) * 100}%`,
-            background: r.pnl >= 0 ? 'var(--up)' : 'var(--down)',
-            borderRadius: 5,
-          }}
-        />
+  const losses = rows.filter((r) => r.pnl < 0).sort((a, b) => a.pnl - b.pnl)
+  const shownWins = showAll ? wins : wins.slice(0, 5)
+  const shownLosses = showAll ? losses : losses.slice(0, 5)
+  const hiddenCount = rows.length - shownWins.length - shownLosses.length
+  const bar = (r: { symbol: string; pnl: number }) => {
+    const width = `${(Math.abs(r.pnl) / maxAbs) * 50}%`
+    const isWin = r.pnl >= 0
+    return (
+      <div key={r.symbol} className="div-bar-row">
+        <span className="div-label">{r.symbol}</span>
+        <div className="div-track">
+          <div className={`div-bar ${isWin ? 'win' : 'loss'}`} style={{ width }} />
+        </div>
+        <span className={`div-amt ${isWin ? 'up' : 'down'}`}>{money(r.pnl)}</span>
       </div>
-      <span style={{ width: 88, textAlign: 'right', fontSize: 12 }} className={clsPnl(r.pnl)}>
-        {money(r.pnl)}
-      </span>
-    </div>
-  )
+    )
+  }
   return (
     <div>
-      {wins.map(bar)}
-      {wins.length && losses.length ? <div style={{ height: 1, background: 'var(--line2)', margin: '6px 0' }} /> : null}
-      {losses.map(bar)}
+      <div className="div-scale">
+        <span className="down">亏损</span>
+        <span>0</span>
+        <span className="up">盈利</span>
+      </div>
+      {shownLosses.map(bar)}
+      {shownWins.length && shownLosses.length ? <div className="div-divider" /> : null}
+      {shownWins.map(bar)}
+      {hiddenCount > 0 ? (
+        <button type="button" className="link" onClick={() => setShowAll((v) => !v)}>
+          {showAll ? '收起' : `查看全部 ${rows.length} 只`}
+        </button>
+      ) : null}
     </div>
   )
 }
@@ -560,7 +552,7 @@ function RDistribution(props: { trips: RoundTrip[] }) {
         <div key={b.label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
           <span style={{ width: 68, textAlign: 'right', fontSize: 12 }}>{b.label}</span>
           <div style={{ flex: 1, position: 'relative', height: 12, background: 'var(--line2)', borderRadius: 4 }}>
-            <div style={{ position: 'absolute', left: 0, top: 0, height: 12, width: `${(counts[i] / maxCount) * 100}%`, background: 'var(--gold)', borderRadius: 4 }} />
+            <div style={{ position: 'absolute', left: 0, top: 0, height: 12, width: `${(counts[i] / maxCount) * 100}%`, background: b.lo >= 0 ? 'var(--up)' : 'var(--down)', borderRadius: 4 }} />
           </div>
           <span style={{ width: 24, textAlign: 'right', fontSize: 12 }}>{counts[i]}</span>
         </div>
@@ -613,7 +605,6 @@ export function Dashboard(props: {
   const [insight, setInsight] = useState<Insight | null>(null)
   const [groupReturn, setGroupReturn] = useState<Insight | null>(null)
   const [showFills, setShowFills] = useState(false)
-  const [showAdvanced, setShowAdvanced] = useState(false)
   const [sideFilter, setSideFilter] = useState<SideFilter>('all')
   const [symbolFilter, setSymbolFilter] = useState<string[]>([])
   const [cursor, setCursor] = useState<number | null>(null)
@@ -747,39 +738,6 @@ export function Dashboard(props: {
     setRange(null)
   }
 
-  const accountStats = (
-    <>
-      <Stat
-        k={<span className="hint">XIRR（年化）</span>}
-        v={p.xirr == null ? '待补数据' : signedPct(p.xirr)}
-        tone={p.xirr == null ? 'na' : undefined}
-        sub={p.xirr == null ? '缺少期初净资产或完整入出金 · 立即补充 →' : p.xirrReason || '整本账 · 含入出金'}
-        tip={
-          p.xirr == null
-            ? '补填期初净资产与完整入出金后才能计算 XIRR。缺失不等于零，也不猜。'
-            : '按你实际投进去、拿出来的钱算的年化回报。没有完整入出金时不猜。'
-        }
-        onClick={() => (p.xirr == null ? openAccountSupplement() : openInsight({ kind: 'xirr' }))}
-      />
-      <Stat
-        k={<span className="hint">相对基准财富</span>}
-        v={p.relativeSpx == null ? '待补数据' : signedPct(p.relativeSpx)}
-        tone={p.relativeSpx == null ? 'na' : undefined}
-        sub={
-          p.relativeSpx == null
-            ? '要对拍基准需要账户收益率 · 立即补充 →'
-            : accountOk
-              ? p.benchKind === 'spy-total-return'
-                ? '账户级 · SPY 全收益'
-                : '账户级 · SPX 价格指数，不含股息'
-              : '账户级'
-        }
-        tip="把你的账户财富和基准从同一天滚到现在，看谁涨得多。优先用 SPY 复权全收益；没有 SPY 时改用 SPX 价格指数，不含股息。不是两个收益率直接相减。"
-        onClick={() => (p.relativeSpx == null ? openAccountSupplement() : openInsight({ kind: 'spx' }))}
-      />
-    </>
-  )
-
   return (
     <div className={`dash ${drawerOpen ? 'with-drawer' : ''} ${props.updating ? 'is-updating' : ''}`}>
       {props.updating ? <div className="recalc-veil">正在更新 · {props.stage}</div> : null}
@@ -865,36 +823,23 @@ export function Dashboard(props: {
           sub={accountOk ? '整本账 · 已剥离出入金' : '正股成交还原 · 费用按已匹配部分计入'}
           tip={
             accountOk
-              ? '这是账户自己涨了多少，中途存进去、取出来的钱已经拿掉了。所以你再筛选某几笔交易，这个数字也不会变。它不是你口袋里实际拿到的回报。'
-              : '没有期初净资产时，不猜账户规模。这条是美股正股成交还原出来的现金加市值，起点为 0，也就是这段正股交易的盯市盈亏。缺的费用不估成 0，也不挡住计算。'
+              ? '这是账户自己涨了多少，中途存进去、取出来的钱已经拿掉了。它不是你口袋里实际拿到的回报。'
+              : '没有期初净资产时，不猜账户规模。这条是美股正股成交还原出来的现金加市值，起点为 0，也就是这段正股交易的盯市盈亏。'
           }
           onClick={() => openInsight({ kind: 'twr' })}
         />
-        {accountOk ? accountStats : null}
         <Stat
-          k={<span className="hint">{accountOk ? '最大回撤' : '最大金额回落'}</span>}
-          v={
-            sleeveOk
-              ? p.maxDrawdownUsd
-                ? <span className="down">−{moneyAbs(p.maxDrawdownUsd)}</span>
-                : 'N/A'
-              : p.maxDrawdown == null
-                ? 'N/A'
-                : <span className="down">{pct(p.maxDrawdown)}</span>
-          }
+          k={<span className="hint">历史单笔均值</span>}
+          v={expectancy.value != null ? money(expectancy.value) : 'N/A'}
           sub={
-            sleeveOk
-              ? `非完整账户回撤 · ${p.currentlyUnderwater ? '仍在水下' : `水下 ${p.underwaterDays} 日`}`
-              : p.maxDrawdown == null
-                ? naReason
-                : `${moneyAbs(p.maxDrawdownUsd)}${p.currentlyUnderwater ? ' · 仍在水下' : ` · 水下 ${p.underwaterDays} 日`}`
+            filtered
+              ? '按所选交易重算'
+              : expectancy.ci
+                ? `95% CI：${ciText(expectancy.ci, 'money', 0).replace('–', ' 至 ')}`
+                : '—'
           }
-          tip={
-            accountOk
-              ? '账户从最高点掉到最低点，最多跌了多少。中途存取已经被拿掉，所以大额取钱不会单独把这条线砸下去。'
-              : '正股盯市盈亏从最高点掉到最低点的金额。由于缺少账户净资产，这不是账户回撤率，也无法判断相当于账户资产的百分之多少。'
-          }
-          onClick={() => go('risk')}
+          tip="平均每笔交易赚或亏多少钱。置信区间若跨过 0，说明现在还不能称为稳定的正向或负向期望。"
+          onClick={() => openInsight({ kind: 'expectancy' })}
         />
         <Stat
           k={<span className="hint">胜率</span>}
@@ -902,26 +847,34 @@ export function Dashboard(props: {
           sub={
             filtered
               ? `按所选交易 · n=${winRate.n}`
-              : `n=${winRate.n} · ${p.uniqueOpenDays} 个开仓日${winRate.ci ? ` · 95% ${ciText(winRate.ci, 'pct', 0)}` : ''}`
+              : `n=${winRate.n}${winRate.ci ? ` · 95% ${ciText(winRate.ci, 'pct', 0)}` : ''}`
           }
-          tip="赚了钱的交易占几成。Wilson 区间按单笔独立近似；旁边还会给出按开仓日聚类的 bootstrap 区间。胜率高不等于整体赚钱。"
+          tip="赚了钱的交易占几成。胜率高不等于整体赚钱。"
           onClick={() => openInsight({ kind: 'winRate' })}
         />
         <Stat
-          k={<span className="hint">单笔期望</span>}
-          v={expectancy.value != null ? money(expectancy.value) : 'N/A'}
+          k={<span className="hint">Profit Factor</span>}
+          v={profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? profitFactor.value.toFixed(2) : '+∞') : 'N/A'}
           sub={
             filtered
               ? '按所选交易重算'
-              : expectancy.ci
-                ? `95% 区间：${ciText(expectancy.ci, 'money', 0).replace('–', ' 至 ')}${expectancy.ci.lo < 0 && (expectancy.ci.hi == null || expectancy.ci.hi > 0) ? ' · 区间跨过 0，尚不明确正向期望' : ''}`
-                : '—'
+              : profitFactor.value != null && !Number.isFinite(profitFactor.value)
+                ? '毛利 / 毛亏 · 无亏损'
+                : '毛利 / 毛亏'
           }
-          tip="平均每笔交易赚或亏多少钱。旁边的区间如果从亏到赚都有，说明现在还看不准到底有没有稳定优势。"
-          onClick={() => openInsight({ kind: 'expectancy' })}
+          tip="毛利除以毛亏。没有亏损时记为 +∞。大于 1 整体盈利，小于 1 整体亏损。"
         />
-        {!accountOk ? accountStats : null}
       </section>
+      {!accountOk ? (
+        <div className="status-strip">
+          <b>账户级指标不可用</b>
+          <span>缺少期初净资产及完整现金流，XIRR 与相对基准暂不计算。</span>
+          <span className="spacer" />
+          <button type="button" className="btn-primary sm" onClick={openAccountSupplement}>
+            补充数据
+          </button>
+        </div>
+      ) : null}
 
       <nav className="tabs sticky-tabs">
         {TABS.map((item) => (
@@ -1163,11 +1116,16 @@ export function Dashboard(props: {
                 {p.winRateBoot && !filtered ? (
                   <MetricLine k="胜率 bootstrap" m={p.winRateBoot} kind="pct" digits={0} plain />
                 ) : null}
-                <MetricLine k="单笔期望" m={expectancy} kind="money" filtered={filtered} onClick={() => openInsight({ kind: 'expectancy' })} />
+                <MetricLine k="历史单笔均值" m={expectancy} kind="money" filtered={filtered} onClick={() => openInsight({ kind: 'expectancy' })} />
                 <MetricLine k={<Hint term="Profit Factor" def="毛利除以毛亏。没有亏损时记为 +∞，bootstrap 里这些轮次保留，不删除。" />} m={profitFactor} kind="num" filtered={filtered} />
                 <MetricLine k="盈亏比" m={p.payoff} kind="num" />
               </div>
               {p.pfInfShare > 0 ? <p className="tiny">Bootstrap 中 {pctPlain(p.pfInfShare, 1)} 的轮次 PF 为 +∞。</p> : null}
+              {small ? (
+                <p className="tiny">
+                  SQN 暂不可用：当前 {p.closedCount} 笔、{p.uniqueOpenDays} 个开仓日，保护条件为至少 30 笔且开仓日足够。达到条件后仍需结合区间判断。
+                </p>
+              ) : null}
             </article>
             <article className="panel">
               <h3>日线估算退出质量</h3>
@@ -1207,7 +1165,7 @@ export function Dashboard(props: {
                 <b>{p.captureAnomalies} 笔退出超过日线估算 MFE</b>
               </div>
             </article>
-            <article className="panel">
+            <article className="panel wide">
               <h3>ATR 标准化盈亏</h3>
               <p className="muted">用开仓前 ATR×数量当风险单位。没有足够日线时记为缺失，不用 2% 代替。</p>
               <div className="kv-grid">
@@ -1223,34 +1181,6 @@ export function Dashboard(props: {
                 </b>
               </div>
               <RDistribution trips={scoped} />
-            </article>
-            <article className="panel">
-              <h3>高级指标</h3>
-              <p className="muted">样本不足时禁用，不输出可执行仓位建议。</p>
-              <button type="button" className="ghost sm" onClick={() => setShowAdvanced((v) => !v)}>
-                {showAdvanced ? '收起 SQN' : '了解限制'}
-              </button>
-              {showAdvanced ? (
-                <div className="kv-grid" style={{ marginTop: 12 }}>
-                  <span>SQN</span>
-                  <b>
-                    {small ? (
-                      <button type="button" className="link" onClick={() => openInsight({ kind: 'sqn' })}>
-                        暂不可用
-                      </button>
-                    ) : p.sqn != null ? (
-                      p.sqn.toFixed(2)
-                    ) : (
-                      '—'
-                    )}
-                  </b>
-                </div>
-              ) : null}
-              {small ? (
-                <p className="tiny">
-                  SQN 暂不可用。当前 {p.closedCount} 笔、{p.uniqueOpenDays} 个开仓日，保护条件为至少 30 笔且开仓日足够。达到条件后仍需结合区间判断。
-                </p>
-              ) : null}
             </article>
           </div>
           <article className="panel" style={{ marginTop: 12 }}>
