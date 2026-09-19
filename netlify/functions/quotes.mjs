@@ -158,6 +158,37 @@ async function loadSymbol(symbol, period1, period2) {
 
 export default async function handler(event) {
   const qs = event.queryStringParameters || {}
+
+  if (qs.debug === '1') {
+    const info = { cookieStatus: null, crumbStatus: null, chartStatus: null, error: null }
+    try {
+      const cookieRes = await fetch('https://fc.yahoo.com', {
+        headers: { 'User-Agent': UA, Accept: '*/*' },
+        redirect: 'manual',
+      })
+      info.cookieStatus = cookieRes.status
+      const cookieHeader = getSetCookies(cookieRes).map((sc) => sc.split(';')[0]).join('; ')
+      const crumbRes = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+        headers: { 'User-Agent': UA, Cookie: cookieHeader },
+      })
+      info.crumbStatus = crumbRes.status
+      const crumb = (await crumbRes.text()).trim()
+      const period1 = Math.floor(Date.parse('2026-01-01T00:00:00Z') / 1000)
+      const period2 = Math.floor(Date.parse('2026-09-19T23:59:59Z') / 1000) + 86400
+      const chartRes = await fetch(
+        `https://query1.finance.yahoo.com/v8/finance/chart/SPY?period1=${period1}&period2=${period2}&interval=1d&events=split%2Cdiv&includeAdjustedClose=true&crumb=${encodeURIComponent(crumb)}`,
+        { headers: { 'User-Agent': UA, Cookie: cookieHeader, Accept: 'application/json' } },
+      )
+      info.chartStatus = chartRes.status
+    } catch (e) {
+      info.error = String(e)
+    }
+    return new Response(JSON.stringify(info), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    })
+  }
+
   const symbols = (qs.symbols || '')
     .split(',')
     .map((s) => s.trim())
