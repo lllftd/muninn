@@ -144,6 +144,35 @@ async function fetchStooq(symbol) {
   return bars.length ? { bars, splits: 0 } : null
 }
 
+function twelveSymbol(symbol) {
+  if (symbol === 'SPX' || symbol === '^GSPC') return 'SPX'
+  if (symbol === 'VIX' || symbol === '^VIX') return 'VIX'
+  if (symbol === 'IRX' || symbol === '^IRX') return 'IRX'
+  return symbol
+}
+
+async function fetchTwelveData(symbol, apiKey) {
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(twelveSymbol(symbol))}&interval=1day&outputsize=5000&apikey=${apiKey}`
+  const res = await fetch(url)
+  if (!res.ok) return null
+  const data = await res.json()
+  const values = data.values
+  if (!Array.isArray(values) || !values.length) return null
+  const bars = []
+  for (const row of values) {
+    const date = row.datetime
+    const open = Number(row.open)
+    const high = Number(row.high)
+    const low = Number(row.low)
+    const close = Number(row.close)
+    const volume = Number(row.volume)
+    if (!date || !Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) continue
+    bars.push({ date, open, high, low, close, volume: volume || 0 })
+  }
+  bars.sort((a, b) => a.date.localeCompare(b.date))
+  return bars.length ? { bars, splits: 0 } : null
+}
+
 async function fetchAlphaVantage(symbol, apiKey) {
   const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol=${encodeURIComponent(symbol)}&outputsize=full&apikey=${apiKey}`
   const res = await fetch(url)
@@ -178,8 +207,10 @@ async function loadSymbol(symbol, period1, period2) {
   const key = `${symbol}|${period1}|${period2}`
   const hit = cache.get(key)
   if (hit && Date.now() - hit.at < TTL_MS) return hit
-  const apiKey = process.env.ALPHA_VANTAGE_KEY || ''
-  let pack = apiKey ? await fetchAlphaVantage(symbol, apiKey).catch(() => null) : null
+  const twelveKey = process.env.TWELVE_DATA_KEY || ''
+  const avKey = process.env.ALPHA_VANTAGE_KEY || ''
+  let pack = twelveKey ? await fetchTwelveData(symbol, twelveKey).catch(() => null) : null
+  if (!pack && avKey) pack = await fetchAlphaVantage(symbol, avKey).catch(() => null)
   if (!pack) pack = await fetchYahoo(symbol, period1, period2).catch(() => null)
   if (!pack) pack = await fetchStooq(symbol).catch(() => null)
   if (!pack) return { at: Date.now(), bars: [], splits: 0 }
