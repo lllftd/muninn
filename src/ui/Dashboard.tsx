@@ -491,7 +491,7 @@ export function Dashboard(props: {
             sleeveOk
               ? p.maxDrawdown == null
                 ? '正股盯市 · 美元回撤'
-                : `${pct(p.maxDrawdown)}${p.currentlyUnderwater ? ' · 仍在水下' : ` · 水下 ${p.underwaterDays} 日`}`
+                : `美元回撤 · ${p.currentlyUnderwater ? '仍在水下' : `水下 ${p.underwaterDays} 日`}`
               : p.maxDrawdown == null
                 ? naReason
                 : `${moneyAbs(p.maxDrawdownUsd)}${p.currentlyUnderwater ? ' · 仍在水下' : ` · 水下 ${p.underwaterDays} 日`}`
@@ -558,12 +558,47 @@ export function Dashboard(props: {
                   moneyAbs(p.initialCapital)
                 )}
               </b>
-              <span>期末净值</span>
-              <b>{p.finalEquity == null ? <VChip label="无法计算" tone="fail" /> : moneyAbs(p.finalEquity)}</b>
+              <span>{accountOk ? '期末净值' : '子账本重建余额'}</span>
+              <b>
+                {p.finalEquity == null ? (
+                  <VChip label="无法计算" tone="fail" />
+                ) : (
+                  <>
+                    {moneyAbs(p.finalEquity)}
+                    {!accountOk ? <VChip label="重建值" tone="watch" /> : null}
+                  </>
+                )}
+              </b>
               <span>净入金</span>
-              <b>{moneyAbs(p.deposits)}</b>
+              <b>
+                {p.cashflowsProvided ? (
+                  moneyAbs(p.deposits)
+                ) : (
+                  <VChip
+                    label="未提供"
+                    tone="watch"
+                    onClick={() => {
+                      const row = p.coverage.find((c) => c.item === '外部入出金')
+                      if (row) pickCoverage(row)
+                    }}
+                  />
+                )}
+              </b>
               <span>出金</span>
-              <b>{moneyAbs(p.withdrawals)}</b>
+              <b>
+                {p.cashflowsProvided ? (
+                  moneyAbs(p.withdrawals)
+                ) : (
+                  <VChip
+                    label="未提供"
+                    tone="watch"
+                    onClick={() => {
+                      const row = p.coverage.find((c) => c.item === '外部入出金')
+                      if (row) pickCoverage(row)
+                    }}
+                  />
+                )}
+              </b>
               <span>{accountOk ? 'TWR' : '累计盯市盈亏'}</span>
               <b>
                 {accountOk ? (
@@ -604,8 +639,14 @@ export function Dashboard(props: {
                   />
                 )}
               </b>
-              <span>对账差异</span>
-              <b>{accountOk ? money(p.reconDifference, 2) : <VChip label="无法计算" tone="fail" />}</b>
+              <span>勾稽差额</span>
+              <b>
+                {p.unrealizedPnl == null ? (
+                  <VChip label="无法计算" tone="fail" />
+                ) : (
+                  money(p.reconDifference, 2)
+                )}
+              </b>
             </div>
             {p.xirrReason ? <p className="tiny">{p.xirrReason}</p> : null}
             {accountOk ? (
@@ -622,6 +663,11 @@ export function Dashboard(props: {
             <p className="tiny">
               已实现 FIFO 为费用后净额；佣金和 SEC/TAF 已计入往返，不对账再扣一次。费用金额只作覆盖披露。
             </p>
+            {p.unrealizedPnl != null ? (
+              <p className="tiny">
+                勾稽：已实现 {money(p.realizedPnl)} + 未实现 {signedMoney(p.unrealizedPnl)} + 勾稽差额 {money(p.reconDifference, 2)} = 盯市盈亏 {signedMoney(p.netPnl)}。差额主要来自分红再投资与未匹配费用等未提供项。
+              </p>
+            ) : null}
             <p className="tiny">
               期初来源：{p.hasNav ? '用户填写' : '未提供，无法从成交额可靠推断'}
               {p.equitySubsetOnly ? ' · 以下仅覆盖美股正股子账本' : ''}

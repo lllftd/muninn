@@ -63,7 +63,11 @@ export default function App() {
           isSample: !!args.isSample,
         })
         setBook(next)
-        setStage(`计算完成 · 口径版本 ${METRIC_VERSION}`)
+        setStage(
+          next.performance.hasNav
+            ? `计算完成 · 口径版本 ${METRIC_VERSION}`
+            : `交易层完成 · 账户层受限`,
+        )
       } catch (err) {
         setError(err instanceof Error ? err.message : '分析失败')
         if (!book) setStage(null)
