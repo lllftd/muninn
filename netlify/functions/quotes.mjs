@@ -221,6 +221,27 @@ async function loadSymbol(symbol, period1, period2) {
 
 export default async function handler(event) {
   const qs = event.queryStringParameters || {}
+
+  if (qs.diag === '1') {
+    const twelveKey = process.env.TWELVE_DATA_KEY || ''
+    const avKey = process.env.ALPHA_VANTAGE_KEY || ''
+    let tdStatus = 'no_key'
+    let tdSample = ''
+    if (twelveKey) {
+      try {
+        const r = await fetch(`https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&outputsize=2&apikey=${twelveKey}`)
+        tdStatus = String(r.status)
+        tdSample = (await r.text()).slice(0, 120)
+      } catch (e) {
+        tdStatus = 'error:' + String(e)
+      }
+    }
+    return new Response(JSON.stringify({ hasTwelveKey: !!twelveKey, hasAvKey: !!avKey, tdStatus, tdSample }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    })
+  }
+
   const symbols = (qs.symbols || '')
     .split(',')
     .map((s) => s.trim())
