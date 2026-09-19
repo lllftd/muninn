@@ -31,6 +31,7 @@ export function InsightDrawer(props: {
 }) {
   const { book, insight } = props
   const p = book.performance
+  const accountOk = p.pathKind === 'account'
   return (
     <aside className="drawer wide-drawer">
       <button type="button" className="drawer-close" onClick={props.onClose}>
@@ -323,39 +324,62 @@ export function InsightDrawer(props: {
 
       {insight.kind === 'day' ? (
         <>
-          <div className="drawer-k">同一条账户路径上的一天</div>
+          <div className="drawer-k">{accountOk ? '同一条账户路径上的一天' : '正股盯市盈亏路径上的一天'}</div>
           <h3>{insight.point.date}</h3>
           <dl className="kv">
-            <div>
-              <dt>账户财富</dt>
-              <dd>{(insight.point.index / 100).toFixed(3)}</dd>
-            </div>
-            <div>
-              <dt>基准财富</dt>
-              <dd>{(insight.point.benchIndex / 100).toFixed(3)}</dd>
-            </div>
-            <div>
-              <dt>相对财富比</dt>
-              <dd>
-                {insight.point.benchIndex ? pct(insight.point.index / insight.point.benchIndex - 1) : '—'}
-              </dd>
-            </div>
-            <div>
-              <dt>净值</dt>
-              <dd>{moneyAbs(insight.point.equity)}</dd>
-            </div>
+            {accountOk ? (
+              <>
+                <div>
+                  <dt>账户财富</dt>
+                  <dd>{(insight.point.index / 100).toFixed(3)}</dd>
+                </div>
+                <div>
+                  <dt>基准财富</dt>
+                  <dd>{(insight.point.benchIndex / 100).toFixed(3)}</dd>
+                </div>
+                <div>
+                  <dt>相对财富比</dt>
+                  <dd>
+                    {insight.point.benchIndex ? pct(insight.point.index / insight.point.benchIndex - 1) : '—'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>净值</dt>
+                  <dd>{moneyAbs(insight.point.equity)}</dd>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <dt>盯市盈亏</dt>
+                  <dd>{money(insight.point.equity)}</dd>
+                </div>
+                <div>
+                  <dt>现金</dt>
+                  <dd>{money(insight.point.cash)}</dd>
+                </div>
+                <div>
+                  <dt>未实现</dt>
+                  <dd>{money(insight.point.mtm)}</dd>
+                </div>
+              </>
+            )}
             <div>
               <dt>净现金流</dt>
               <dd>{insight.point.cashflow ? money(insight.point.cashflow) : '$0.00'}</dd>
             </div>
-            <div>
-              <dt>回撤</dt>
-              <dd>{pct(insight.point.drawdown)}</dd>
-            </div>
-            <div>
-              <dt>净敞口</dt>
-              <dd>{pctPlain(insight.point.netExposure, 1)}</dd>
-            </div>
+            {accountOk ? (
+              <div>
+                <dt>回撤</dt>
+                <dd>{pct(insight.point.drawdown)}</dd>
+              </div>
+            ) : null}
+            {accountOk ? (
+              <div>
+                <dt>净敞口</dt>
+                <dd>{pctPlain(insight.point.netExposure, 1)}</dd>
+              </div>
+            ) : null}
           </dl>
         </>
       ) : null}

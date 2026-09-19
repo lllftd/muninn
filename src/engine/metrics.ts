@@ -357,12 +357,12 @@ export function summarize(args: {
   let ddTrough: string | null = null
   let ddRecover: string | null = null
   let currentlyUnderwater = false
-  let ulcer = 0
+  let ulcer: number | null = null
   let calmar: number | null = null
   let relativeSpx: number | null = null
   let relativeCash: number | null = null
-  let grossExposureMean = 0
-  let netExposureMean = 0
+  let grossExposureMean: number | null = null
+  let netExposureMean: number | null = null
 
   if (canAccount && equity.length > 1) {
     const rets = dailyRetsFromIndex(equity.map((e) => e.index))
@@ -447,12 +447,11 @@ export function summarize(args: {
     grossExposureMean = mean(equity.map((e) => e.grossExposure))
     netExposureMean = mean(equity.map((e) => e.netExposure))
   } else if (sleeve && equity.length > 1) {
+    // 没有账户净值时，只用累计盯市盈亏的金额回落，不计算百分比回撤率。
     let peakIdx = 0
     let peakEq = -Infinity
     let underStart = 0
-    let maxDd = 0
-    const absMax = Math.max(...equity.map((p) => Math.abs(p.equity)), 0)
-    const minPeak = Math.max(100, 0.05 * absMax)
+    let maxDdUsd = 0
     for (let i = 0; i < equity.length; i++) {
       const p = equity[i]
       if (p.equity > peakEq) {
@@ -460,26 +459,25 @@ export function summarize(args: {
         peakIdx = i
         if (underStart && !ddRecover) ddRecover = p.date
       }
-      if (peakEq < minPeak) continue
-      const dd = p.equity / peakEq - 1
-      if (dd < maxDd) {
-        maxDd = dd
+      const ddUsd = p.equity - peakEq
+      if (ddUsd < maxDdUsd) {
+        maxDdUsd = ddUsd
         maxDrawdownUsd = equity[peakIdx].equity - p.equity
         ddStart = equity[peakIdx].date
         ddTrough = p.date
         ddRecover = null
       }
-      if (dd < -1e-9) {
+      if (ddUsd < -1e-6) {
         if (!underStart) underStart = i
         maxUnder = Math.max(maxUnder, i - underStart + 1)
       } else underStart = 0
     }
-    maxDrawdown = maxDd < 0 ? maxDd : null
-    currentlyUnderwater = last && peakEq >= minPeak ? last.equity < peakEq - 1e-6 : false
+    maxDrawdown = null
+    currentlyUnderwater = last ? last.equity < peakEq - 1e-6 : false
     if (currentlyUnderwater) ddRecover = null
-    ulcer = Math.sqrt(equity.reduce((s, p) => s + p.drawdown ** 2, 0) / equity.length)
-    grossExposureMean = mean(equity.map((e) => e.grossExposure))
-    netExposureMean = mean(equity.map((e) => e.netExposure))
+    ulcer = null
+    grossExposureMean = null
+    netExposureMean = null
   }
   const pathAudit = canAccount ? auditAccountPath(equity, twr, relativeSpx, maxDrawdown) : null
   if (alpha && pathAudit && !pathAudit.ok) {

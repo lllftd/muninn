@@ -258,9 +258,9 @@ export type Performance = {
   ddRecover: string | null
   underwaterDays: number
   currentlyUnderwater: boolean
-  ulcer: number
-  grossExposureMean: number
-  netExposureMean: number
+  ulcer: number | null
+  grossExposureMean: number | null
+  netExposureMean: number | null
   bootstrapSeed: number
   sampleStart: string
   sampleEnd: string

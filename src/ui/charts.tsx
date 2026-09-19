@@ -1,4 +1,5 @@
 import { useRef, type CSSProperties, type ReactNode } from 'react'
+import { moneyK } from '../lib/format.ts'
 
 export function LineChart(props: {
   width?: number
@@ -279,6 +280,91 @@ export function AreaDrawdown(props: {
       {props.trough != null ? <circle cx={xAt(props.trough)} cy={ys[props.trough]} r={4} fill="var(--down)" /> : null}
       {props.cursor != null && n ? <line x1={xAt(props.cursor)} x2={xAt(props.cursor)} y1={4} y2={h - 4} className="cursor-line" /> : null}
     </svg>
+  )
+}
+
+export function DollarDrawdown(props: {
+  dates: string[]
+  values: number[]
+  height: number
+  cursor?: number | null
+  trough?: number | null
+  peak?: number | null
+  onCursor?: (i: number | null) => void
+  onPick?: (i: number) => void
+}) {
+  const w = 640
+  const h = props.height
+  const n = props.values.length
+  const min = Math.min(...props.values, 0)
+  const max = 0
+  const span = max - min || 1
+  const pad = { l: 2, r: 8, t: 10, b: 18 }
+  const innerW = w - pad.l - pad.r
+  const innerH = h - pad.t - pad.b
+  const xAt = (i: number) => pad.l + (i / Math.max(n - 1, 1)) * innerW
+  const yPx = (v: number) => pad.t + (1 - (v - min) / span) * innerH
+  const yPct = (v: number) => `${((v - min) / span) * 100}%`
+  const xPct = (i: number) => `${(xAt(i) / w) * 100}%`
+  const yTopPct = (v: number) => `${(yPx(v) / h) * 100}%`
+  const ticks = niceTicks(min, 0)
+  const dates = dateTickLabels(props.dates, n)
+  const d = props.values.map((v, i) => `${i ? 'L' : 'M'}${xAt(i).toFixed(1)},${yPx(v).toFixed(1)}`).join(' ')
+  const area = `${d} L${xAt(Math.max(n - 1, 0))},${yPx(0)} L${xAt(0)},${yPx(0)} Z`
+  return (
+    <div className="ml-chart">
+      <div className="ml-body">
+        <div className="ml-y" aria-hidden>
+          {ticks.map((t) => (
+            <span key={t} style={{ bottom: yPct(t) }}>
+              {moneyK(t)}
+            </span>
+          ))}
+        </div>
+        <svg
+          viewBox={`0 0 ${w} ${h}`}
+          className="chart interactive"
+          preserveAspectRatio="none"
+          onPointerLeave={() => props.onCursor?.(null)}
+          onPointerMove={(e) => {
+            if (!n) return
+            props.onCursor?.(cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, pad.l, innerW, w))
+          }}
+          onClick={(e) => {
+            if (!n) return
+            props.onPick?.(cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, pad.l, innerW, w))
+          }}
+        >
+          {ticks.map((t) => (
+            <line key={t} x1={pad.l} x2={w - pad.r} y1={yPx(t)} y2={yPx(t)} className={Math.abs(t) < 1e-6 ? 'base-line' : 'grid'} />
+          ))}
+          <path d={area} fill="var(--down-fill)" />
+          <path d={d} fill="none" stroke="var(--down)" strokeWidth={1.5} />
+          {props.trough != null && n ? <circle cx={xAt(props.trough)} cy={yPx(props.values[props.trough])} r={4} fill="var(--down)" /> : null}
+          {props.peak != null && n ? <circle cx={xAt(props.peak)} cy={yPx(0)} r={3} fill="var(--gold)" /> : null}
+          {props.cursor != null && n ? <line x1={xAt(props.cursor)} x2={xAt(props.cursor)} y1={pad.t} y2={pad.t + innerH} className="cursor-line" /> : null}
+        </svg>
+        {props.trough != null && n ? (
+          <span className="ml-mark down" style={{ left: xPct(props.trough), top: yTopPct(props.values[props.trough]) }}>
+            谷底 {moneyK(props.values[props.trough])}
+          </span>
+        ) : null}
+        {props.peak != null && n ? (
+          <span className="ml-mark up" style={{ left: xPct(props.peak), top: yTopPct(0) }}>
+            高点 $0
+          </span>
+        ) : null}
+      </div>
+      {dates.length ? (
+        <div className="ml-x" aria-hidden>
+          {dates.map((d) => (
+            <span key={d.i} style={{ left: xPct(d.i) }}>
+              {d.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

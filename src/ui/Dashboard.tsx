@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Brand, ThemeToggle } from './chrome.tsx'
-import { AreaDrawdown, CaptureBar, MaeBar, MultiLine, Scatter, Stat } from './charts.tsx'
+import { AreaDrawdown, CaptureBar, DollarDrawdown, MaeBar, MultiLine, Scatter, Stat } from './charts.tsx'
 import { InsightDrawer, coverageLabel, type Insight } from './InsightDrawer.tsx'
 import { PathDrawer } from './PathDrawer.tsx'
 import { TABS, tabFromView, viewOf, type Tab } from './views.ts'
@@ -683,6 +683,19 @@ export function Dashboard(props: {
     () => book.equity.map((e, i) => (e.cashflow ? i : -1)).filter((i) => i >= 0),
     [book.equity],
   )
+  const ddSeries = useMemo(() => {
+    if (!sleeveOk || !book.equity.length) return null
+    let peak = -Infinity
+    return book.equity.map((e) => {
+      if (e.equity > peak) peak = e.equity
+      return e.equity - peak
+    })
+  }, [sleeveOk, book.equity])
+  const ddPeakIdx = useMemo(() => {
+    if (!book.equity.length || p.ddStart == null) return null
+    const i = book.equity.findIndex((e) => e.date === p.ddStart)
+    return i >= 0 ? i : null
+  }, [book.equity, p.ddStart])
   const tradeBench = useMemo(() => tradeBenchComparison(book.episodes, book.equity), [book.episodes, book.equity])
   const benchMissing = useMemo(() => {
     const m: string[] = []
@@ -705,7 +718,6 @@ export function Dashboard(props: {
     return out
   }, [sleeveOk, book.equity])
   const drawerOpen = Boolean(selected || insight || showAccountDrawer)
-
   const openInsight = (nextInsight: Insight) => {
     setSelected(null)
     setGroupReturn(null)
@@ -860,7 +872,7 @@ export function Dashboard(props: {
         />
         {accountOk ? accountStats : null}
         <Stat
-          k={<span className="hint">最大回撤</span>}
+          k={<span className="hint">{accountOk ? '最大回撤' : '最大金额回落'}</span>}
           v={
             sleeveOk
               ? p.maxDrawdownUsd
@@ -872,9 +884,7 @@ export function Dashboard(props: {
           }
           sub={
             sleeveOk
-              ? p.maxDrawdown == null
-                ? '正股盯市 · 美元回撤'
-                : `美元回撤 · ${p.currentlyUnderwater ? '仍在水下' : `水下 ${p.underwaterDays} 日`}`
+              ? `非完整账户回撤 · ${p.currentlyUnderwater ? '仍在水下' : `水下 ${p.underwaterDays} 日`}`
               : p.maxDrawdown == null
                 ? naReason
                 : `${moneyAbs(p.maxDrawdownUsd)}${p.currentlyUnderwater ? ' · 仍在水下' : ` · 水下 ${p.underwaterDays} 日`}`
@@ -882,7 +892,7 @@ export function Dashboard(props: {
           tip={
             accountOk
               ? '账户从最高点掉到最低点，最多跌了多少。中途存取已经被拿掉，所以大额取钱不会单独把这条线砸下去。'
-              : '正股盯市盈亏从最高点掉到最低点。这不是完整账户回撤，也不需要你先填期初净资产。'
+              : '正股盯市盈亏从最高点掉到最低点的金额。由于缺少账户净资产，这不是账户回撤率，也无法判断相当于账户资产的百分之多少。'
           }
           onClick={() => go('risk')}
         />
@@ -1554,11 +1564,31 @@ export function Dashboard(props: {
       {tab === 'risk' ? (
         <div className="grid-2">
           <article className="panel wide">
-            <h3>回撤</h3>
+            <h3>
+              {accountOk ? '回撤' : '正股子账本金额回落'}
+              {!accountOk && sleeveOk ? (
+                <span className="pill" style={{ marginLeft: 8 }}>
+                  子账本口径 · 非账户回撤
+                </span>
+              ) : null}
+            </h3>
+            <p className="muted">
+              {accountOk
+                ? '回撤比例来自现金流调整后的账户净值/TWR 序列，出入金已被剥离，不会单独制造回撤跳变。'
+                : sleeveOk
+                  ? '当前仅计算已导入正股交易的金额回落。由于缺少期初净资产和完整现金流，不计算账户回撤率及风险调整收益。'
+                  : naReason}
+            </p>
+            {book.warnings.some((w) => w.code === 'split-suspect' || w.code === 'splits') ? (
+              <div className="banner cannot-prove">
+                <strong>检测到疑似公司行动（拆股/非市场性跳变），金额回落可能失真。</strong>
+                <div>详见顶部「范围与口径说明」中的拆股与跳变提示。</div>
+              </div>
+            ) : null}
             <div className="dd-split">
               {fail ? (
                 <p className="tiny">路径异常，回撤图禁用。</p>
-              ) : (accountOk || sleeveOk) && book.equity.length ? (
+              ) : accountOk && book.equity.length ? (
                 <div className="chart-wrap">
                   <AreaDrawdown
                     height={180}
@@ -1573,45 +1603,90 @@ export function Dashboard(props: {
                     <div className="chart-tip compact">
                       <b>{hover.date}</b>
                       <span>回撤 {pct(hover.drawdown)}</span>
-                      <span>{accountOk ? '账户财富' : '盯市盈亏'} {accountOk ? (hover.index / 100).toFixed(3) : money(hover.equity)}</span>
+                      <span>账户财富 {(hover.index / 100).toFixed(3)}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : sleeveOk && ddSeries ? (
+                <div className="chart-wrap">
+                  <DollarDrawdown
+                    height={180}
+                    dates={book.equity.map((e) => e.date)}
+                    values={ddSeries}
+                    cursor={cursor}
+                    trough={troughIdx}
+                    peak={ddPeakIdx}
+                    onCursor={setCursor}
+                    onPick={(i) => openInsight({ kind: 'day', point: book.equity[i] })}
+                  />
+                  {hover ? (
+                    <div className="chart-tip compact">
+                      <b>{hover.date}</b>
+                      <span>盯市盈亏 {money(hover.equity)}</span>
+                      <span>距高点 {ddSeries[cursor ?? 0] != null ? money(ddSeries[cursor ?? 0]) : '—'}</span>
                     </div>
                   ) : null}
                 </div>
               ) : (
-                <p className="tiny">回撤比例暂不可计算。</p>
+                <p className="tiny">还没有可画的正股路径。</p>
               )}
               <div className="dd-facts">
                 <div className="drawer-k">{accountOk ? '来自同一条账户财富曲线' : '来自正股盯市盈亏曲线'}</div>
                 <h4>
-                  最大回撤{' '}
-                  {p.maxDrawdown == null ? 'N/A' : <span className="down">{pct(p.maxDrawdown)}</span>}
+                  {accountOk ? '最大回撤' : '最大金额回落'}{' '}
+                  {accountOk ? (
+                    p.maxDrawdown == null ? (
+                      'N/A'
+                    ) : (
+                      <span className="down">{pct(p.maxDrawdown)}</span>
+                    )
+                  ) : p.maxDrawdownUsd ? (
+                    <span className="down">−{moneyAbs(p.maxDrawdownUsd)}</span>
+                  ) : (
+                    'N/A'
+                  )}
                 </h4>
                 <dl className="kv">
                   <div>
-                    <dt>开始</dt>
+                    <dt>{accountOk ? '开始' : '高点日期'}</dt>
                     <dd>{p.ddStart || '—'}</dd>
                   </div>
                   <div>
-                    <dt>谷底</dt>
+                    <dt>谷底日期</dt>
                     <dd>{p.ddTrough || '—'}</dd>
                   </div>
                   <div>
                     <dt>恢复</dt>
                     <dd>{p.ddRecover || (p.currentlyUnderwater ? '尚未恢复' : '—')}</dd>
                   </div>
-                  <div>
-                    <dt>回撤金额</dt>
-                    <dd>{p.maxDrawdown == null ? 'N/A' : moneyAbs(p.maxDrawdownUsd)}</dd>
-                  </div>
+                  {accountOk ? (
+                    <div>
+                      <dt>回撤金额</dt>
+                      <dd>{p.maxDrawdown == null ? 'N/A' : moneyAbs(p.maxDrawdownUsd)}</dd>
+                    </div>
+                  ) : (
+                    <div>
+                      <dt>水下天数</dt>
+                      <dd>{p.underwaterDays} 个日历日</dd>
+                    </div>
+                  )}
                   <div>
                     <dt>期间出金</dt>
-                    <dd>{moneyAbs(p.withdrawals)}</dd>
+                    <dd>
+                      {accountOk
+                        ? moneyAbs(p.withdrawals)
+                        : !p.cashflowComplete
+                          ? '未确认'
+                          : p.withdrawals > 0
+                            ? moneyAbs(p.withdrawals)
+                            : '$0（用户确认）'}
+                    </dd>
                   </div>
                 </dl>
                 <p className="tiny">
                   {accountOk
                     ? '回撤比例来自 TWR 财富曲线。出入金已被剥离，不会单独制造回撤跳变。'
-                    : '回撤来自正股盯市盈亏的最高点。不是完整账户回撤。'}
+                    : '已导入正股子账本曾从历史高点回落上述金额；由于缺少完整账户净资产与现金流，无法判断这相当于账户资产的百分之多少。'}
                 </p>
               </div>
             </div>
@@ -1622,39 +1697,39 @@ export function Dashboard(props: {
               {accountOk
                 ? `夏普与索提诺都用同一套 rf（${p.rf.approx === 'missing-zero' ? '缺失按 0 近似' : '报价近似'} · ${p.rf.source} · ${p.rf.version}${p.rf.lastDate ? ` · 截止 ${p.rf.lastDate}` : ''}）。索提诺门槛是 rf，不是 0。`
                 : sleeveOk
-                  ? '没有账户收益率时，不计算夏普/索提诺。回撤按正股盯市盈亏最高点计算。'
+                  ? '缺少期初净资产与完整现金流，不计算账户回撤率及风险调整收益。金额回落与水下时长仍可看。'
                   : naReason}
             </p>
             <div className="kv-grid">
               <span>年化波动</span>
-              <b>{p.volAnn == null ? <VChip label="无法计算" tone="fail" /> : pct(p.volAnn)}</b>
+              <b>{p.volAnn == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : pct(p.volAnn)}</b>
               <span>夏普</span>
-              <b>{p.sharpe == null ? <VChip label="无法计算" tone="fail" /> : p.sharpe.toFixed(2)}</b>
+              <b>{p.sharpe == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : p.sharpe.toFixed(2)}</b>
               <span>索提诺</span>
               <b>
-                {p.sortino == null ? <VChip label="无法计算" tone="fail" /> : p.sortino.toFixed(2)}
+                {p.sortino == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : p.sortino.toFixed(2)}
                 {p.sortino != null ? <div className="tiny">门槛 rf</div> : null}
               </b>
-              <span>最大回撤</span>
+              <span>最大回撤率</span>
               <b>
                 {p.maxDrawdown == null ? (
-                  <VChip label="无法计算" tone="fail" />
+                  <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" />
                 ) : (
                   <span className="down">{pct(p.maxDrawdown)}</span>
                 )}
               </b>
               <span>回撤金额</span>
-              <b>{p.maxDrawdown == null ? <VChip label="无法计算" tone="fail" /> : moneyAbs(p.maxDrawdownUsd)}</b>
+              <b>{p.maxDrawdownUsd ? moneyAbs(p.maxDrawdownUsd) : <VChip label="无法计算" tone="na" />}</b>
               <span>Ulcer</span>
-              <b>{p.maxDrawdown == null ? <VChip label="无法计算" tone="fail" /> : p.ulcer.toFixed(3)}</b>
+              <b>{p.ulcer == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : p.ulcer.toFixed(3)}</b>
               <span>水下天数</span>
-              <b>{p.maxDrawdown == null ? <VChip label="无法计算" tone="fail" /> : p.underwaterDays}</b>
+              <b>{p.underwaterDays}</b>
               <span>当前水下</span>
-              <b>{p.maxDrawdown == null ? <VChip label="无法计算" tone="fail" /> : p.currentlyUnderwater ? '是' : '否'}</b>
+              <b>{p.currentlyUnderwater ? '是' : '否'}</b>
               <span>平均毛敞口</span>
-              <b>{sleeveOk || accountOk ? pctPlain(p.grossExposureMean, 0) : <VChip label="无法计算" tone="fail" />}</b>
+              <b>{p.grossExposureMean == null ? <VChip label="无法计算" tone="na" /> : pctPlain(p.grossExposureMean, 0)}</b>
               <span>平均净敞口</span>
-              <b>{sleeveOk || accountOk ? pctPlain(p.netExposureMean, 0) : <VChip label="无法计算" tone="fail" />}</b>
+              <b>{p.netExposureMean == null ? <VChip label="无法计算" tone="na" /> : pctPlain(p.netExposureMean, 0)}</b>
             </div>
           </article>
         </div>
