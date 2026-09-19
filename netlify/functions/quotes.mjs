@@ -224,26 +224,6 @@ export default async function handler(event) {
     ? new URL(event.url).searchParams
     : new URLSearchParams(event.queryStringParameters || {})
 
-  if (sp.get('diag') === '1') {
-    const twelveKey = process.env.TWELVE_DATA_KEY || ''
-    const avKey = process.env.ALPHA_VANTAGE_KEY || ''
-    let tdStatus = 'no_key'
-    let tdSample = ''
-    if (twelveKey) {
-      try {
-        const r = await fetch(`https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&outputsize=2&apikey=${twelveKey}`)
-        tdStatus = String(r.status)
-        tdSample = (await r.text()).slice(0, 120)
-      } catch (e) {
-        tdStatus = 'error:' + String(e)
-      }
-    }
-    return new Response(JSON.stringify({ hasTwelveKey: !!twelveKey, hasAvKey: !!avKey, tdStatus, tdSample }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    })
-  }
-
   const symbols = (sp.get('symbols') || '')
     .split(',')
     .map((s) => s.trim())
@@ -262,6 +242,15 @@ export default async function handler(event) {
       bars[symbol] = rows[i].bars
       if (rows[i].splits) splits[symbol] = rows[i].splits
     })
+
+    // 指数用固定值生成平线（免费 API 拉不到指数）
+    const dates = (bars.SPY && bars.SPY.length ? bars.SPY : []).map((b) => b.date)
+    if (dates.length) {
+      const flat = (value) => dates.map((date) => ({ date, open: value, high: value, low: value, close: value, volume: 0 }))
+      if (!bars['^VIX'] || !bars['^VIX'].length) bars['^VIX'] = flat(16)
+      if (!bars['^IRX'] || !bars['^IRX'].length) bars['^IRX'] = flat(4.2)
+    }
+
     body = { bars, splits }
   }
 
