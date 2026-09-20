@@ -39,16 +39,21 @@ function cursorIndex(clientX: number, rect: DOMRect, count: number, padL: number
   return Math.max(0, Math.min(count - 1, i))
 }
 
-function niceTicks(min: number, max: number, count = 4): number[] {
+function niceTicks(min: number, max: number, count = 4, pin?: number): number[] {
   const span = max - min || 1
-  const raw = span / count
+  const raw = span / Math.max(count, 1)
   const mag = 10 ** Math.floor(Math.log10(raw))
-  const step = [1, 2, 5, 10].map((n) => n * mag).find((n) => n >= raw) || raw
+  const step = [1, 2, 2.5, 5, 10]
+    .map((n) => n * mag)
+    .reduce((best, n) => (Math.abs(n - raw) < Math.abs(best - raw) ? n : best))
   const start = Math.ceil(min / step) * step
   const ticks: number[] = []
   for (let v = start; v <= max + step * 1e-9; v += step) ticks.push(Number(v.toFixed(8)))
-  if (!ticks.includes(100) && min <= 100 && max >= 100) ticks.push(100)
-  return [...new Set(ticks)].sort((a, b) => a - b)
+  if (pin != null && min <= pin && max >= pin) ticks.push(pin)
+  const uniq = [...new Set(ticks)].sort((a, b) => a - b)
+  if (pin == null) return uniq
+  const minGap = span * 0.12
+  return uniq.filter((t) => t === pin || Math.abs(t - pin) >= minGap)
 }
 
 function dateTickLabels(dates: string[], n: number): Array<{ i: number; label: string }> {
@@ -80,11 +85,11 @@ export function MultiLine(props: {
   baseline?: number
   onCursor?: (i: number | null) => void
   onRange?: (range: { lo: number; hi: number } | null) => void
+  onPick?: (i: number) => void
   tickFormat?: (v: number) => string
   dates?: string[]
   endLabel?: { value: number; text: string }
   markers?: Array<{ i: number; value: number; text: string; tone?: 'up' | 'down' }>
-  zeroFill?: boolean
 }) {
   const w = 640
   const h = props.height
@@ -93,21 +98,20 @@ export function MultiLine(props: {
   const baseline = props.baseline ?? 100
   const dataMin = Math.min(...all, baseline)
   const dataMax = Math.max(...all, baseline)
-  const padAmt = Math.max((dataMax - dataMin) * 0.18, 1.2)
+  const padAmt = Math.max((dataMax - dataMin) * 0.12, Math.abs(baseline) * 0.04 + 1)
   const yMin = dataMin - padAmt
   const yMax = dataMax + padAmt
   const span = yMax - yMin || 1
-  const pad = { l: 2, r: 88, t: 10, b: 18 }
+  const pad = { l: 2, r: 96, t: 16, b: 18 }
   const innerW = w - pad.l - pad.r
   const innerH = h - pad.t - pad.b
   const xAt = (i: number) => pad.l + (i / Math.max(n - 1, 1)) * innerW
   const yPx = (v: number) => pad.t + (1 - (v - yMin) / span) * innerH
   const yPct = (v: number) => `${((v - yMin) / span) * 100}%`
   const xPct = (i: number) => `${(xAt(i) / w) * 100}%`
-  const yTopPct = (v: number) => `${(yPx(v) / h) * 100}%`
   const fmtTick = props.tickFormat ?? ((t: number) => (t / 100).toFixed(2))
   const origin = useRef<number | null>(null)
-  const ticks = niceTicks(yMin + padAmt * 0.15, yMax - padAmt * 0.15)
+  const ticks = niceTicks(yMin + padAmt * 0.15, yMax - padAmt * 0.15, 4, baseline)
   const dates = props.dates && props.dates.length === n ? dateTickLabels(props.dates, n) : []
   const pathFor = (values: number[]) => {
     const xs = values.map((_, i) => xAt(i))
@@ -117,6 +121,33 @@ export function MultiLine(props: {
     const d = pathFor(values)
     const baseY = yPx(base)
     return `${d} L${xAt(Math.max(values.length - 1, 0))},${baseY} L${xAt(0)},${baseY} Z`
+  }
+  const labels: Array<{ key: string; text: string; left: string; top: number; className: string }> = []
+  const lastI = Math.max(n - 1, 0)
+  for (const m of props.markers || []) {
+    if (m.i === lastI) continue
+    const nearRight = n > 1 && m.i / (n - 1) > 0.72
+    const nearBottom = (m.value - yMin) / span < 0.22
+    labels.push({
+      key: `m-${m.i}`,
+      text: m.text,
+      left: nearRight ? `calc(${xPct(m.i)} - 8px)` : xPct(m.i),
+      top: yPx(m.value),
+      className: `ml-mark ${m.tone || ''} ${nearRight ? 'near-right' : ''} ${m.tone === 'down' && !nearBottom ? 'below' : ''}`,
+    })
+  }
+  if (props.endLabel && n) {
+    labels.push({
+      key: 'end',
+      text: props.endLabel.text,
+      left: `calc(${xPct(lastI)} + 10px)`,
+      top: yPx(props.endLabel.value),
+      className: 'ml-end',
+    })
+  }
+  labels.sort((a, b) => a.top - b.top)
+  for (let i = 1; i < labels.length; i++) {
+    if (labels[i].top - labels[i - 1].top < 16) labels[i].top = labels[i - 1].top + 16
   }
   return (
     <div className="ml-chart">
@@ -153,6 +184,11 @@ export function MultiLine(props: {
             origin.current = i
             props.onCursor?.(i)
           }}
+          onClick={(e) => {
+            if (!n || !props.onPick) return
+            const i = cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, pad.l, innerW, w)
+            props.onPick(i)
+          }}
         >
           {ticks.map((t) => (
             <line
@@ -175,29 +211,19 @@ export function MultiLine(props: {
           ) : null}
           {props.series.map((s, i) => {
             const d = pathFor(s.values)
-            const line = (
-              <path
-                d={d}
-                fill="none"
-                stroke={s.color}
-                strokeWidth={s.width ?? 1.6}
-                strokeDasharray={s.dash}
-                vectorEffect="nonScalingStroke"
-              />
-            )
-            if (props.zeroFill && baseline === 0) {
-              return (
-                <g key={i}>
-                  <path d={areaFor(s.values.map((v) => Math.max(v, 0)), 0)} fill="var(--up-fill)" />
-                  <path d={areaFor(s.values.map((v) => Math.min(v, 0)), 0)} fill="var(--down-fill)" />
-                  {line}
-                </g>
-              )
-            }
             return (
               <g key={i}>
                 {s.fill ? <path d={areaFor(s.values, baseline)} fill={s.fill} /> : null}
-                {line}
+                <path
+                  d={d}
+                  fill="none"
+                  stroke={s.color}
+                  strokeWidth={s.width ?? 1.8}
+                  strokeDasharray={s.dash}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="nonScalingStroke"
+                />
               </g>
             )
           })}
@@ -207,153 +233,25 @@ export function MultiLine(props: {
           {props.cursor != null && n ? (
             <line x1={xAt(props.cursor)} x2={xAt(props.cursor)} y1={pad.t} y2={pad.t + innerH} className="cursor-line" />
           ) : null}
+          {(props.markers || []).map((m) =>
+            m.i === lastI ? null : (
+              <circle
+                key={`dot-${m.i}`}
+                cx={xAt(m.i)}
+                cy={yPx(m.value)}
+                r={3.2}
+                fill={m.tone === 'down' ? 'var(--down)' : 'var(--up)'}
+                stroke="var(--bg)"
+                strokeWidth={1.5}
+              />
+            ),
+          )}
         </svg>
-        {props.markers?.map((m) => (
-          <span key={m.i} className={`ml-mark ${m.tone || ''}`} style={{ left: xPct(m.i), top: yTopPct(m.value) }}>
-            {m.text}
+        {labels.map((lab) => (
+          <span key={lab.key} className={lab.className} style={{ left: lab.left, top: `${(lab.top / h) * 100}%` }}>
+            {lab.text}
           </span>
         ))}
-        {props.endLabel ? (
-          <span className="ml-end" style={{ left: `calc(${xPct(n - 1)} + 8px)`, top: yTopPct(props.endLabel.value) }}>
-            {props.endLabel.text}
-          </span>
-        ) : null}
-      </div>
-      {dates.length ? (
-        <div className="ml-x" aria-hidden>
-          {dates.map((d) => (
-            <span key={d.i} style={{ left: xPct(d.i) }}>
-              {d.label}
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-export function AreaDrawdown(props: {
-  points: number[]
-  height: number
-  cursor?: number | null
-  range?: { lo: number; hi: number } | null
-  trough?: number | null
-  onCursor?: (i: number | null) => void
-  onPick?: (i: number) => void
-}) {
-  const w = 420
-  const h = props.height
-  const n = props.points.length
-  const min = Math.min(...props.points, 0)
-  const max = Math.max(...props.points, 0.01)
-  const span = max - min || 1
-  const xAt = (i: number) => (i / Math.max(n - 1, 1)) * w
-  const ys = props.points.map((p) => (1 - (p - min) / span) * (h - 16) + 4)
-  const d = props.points.map((_, i) => `${i ? 'L' : 'M'}${xAt(i)},${ys[i]}`).join(' ')
-  const area = `${d} L${w},${h - 4} L0,${h - 4} Z`
-  return (
-    <svg
-      viewBox={`0 0 ${w} ${h}`}
-      className="chart interactive"
-      preserveAspectRatio="none"
-      onPointerLeave={() => props.onCursor?.(null)}
-      onPointerMove={(e) => {
-        if (!n) return
-        props.onCursor?.(cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, 0, w, w))
-      }}
-      onClick={(e) => {
-        if (!n) return
-        props.onPick?.(cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, 0, w, w))
-      }}
-    >
-      {props.range && props.range.hi !== props.range.lo ? (
-        <rect
-          x={xAt(props.range.lo)}
-          y={4}
-          width={Math.max(1, xAt(props.range.hi) - xAt(props.range.lo))}
-          height={h - 8}
-          fill="var(--gold-fill)"
-        />
-      ) : null}
-      <path d={area} fill="var(--down-fill)" />
-      <path d={d} fill="none" stroke="var(--down)" strokeWidth={1.5} />
-      {props.trough != null ? <circle cx={xAt(props.trough)} cy={ys[props.trough]} r={4} fill="var(--down)" /> : null}
-      {props.cursor != null && n ? <line x1={xAt(props.cursor)} x2={xAt(props.cursor)} y1={4} y2={h - 4} className="cursor-line" /> : null}
-    </svg>
-  )
-}
-
-export function DollarDrawdown(props: {
-  dates: string[]
-  values: number[]
-  height: number
-  cursor?: number | null
-  trough?: number | null
-  peak?: number | null
-  onCursor?: (i: number | null) => void
-  onPick?: (i: number) => void
-}) {
-  const w = 640
-  const h = props.height
-  const n = props.values.length
-  const min = Math.min(...props.values, 0)
-  const max = 0
-  const span = max - min || 1
-  const pad = { l: 2, r: 88, t: 10, b: 18 }
-  const innerW = w - pad.l - pad.r
-  const innerH = h - pad.t - pad.b
-  const xAt = (i: number) => pad.l + (i / Math.max(n - 1, 1)) * innerW
-  const yPx = (v: number) => pad.t + (1 - (v - min) / span) * innerH
-  const yPct = (v: number) => `${((v - min) / span) * 100}%`
-  const xPct = (i: number) => `${(xAt(i) / w) * 100}%`
-  const yTopPct = (v: number) => `${(yPx(v) / h) * 100}%`
-  const ticks = niceTicks(min, 0)
-  const dates = dateTickLabels(props.dates, n)
-  const d = props.values.map((v, i) => `${i ? 'L' : 'M'}${xAt(i).toFixed(1)},${yPx(v).toFixed(1)}`).join(' ')
-  const area = `${d} L${xAt(Math.max(n - 1, 0))},${yPx(0)} L${xAt(0)},${yPx(0)} Z`
-  return (
-    <div className="ml-chart">
-      <div className="ml-body">
-        <div className="ml-y" aria-hidden>
-          {ticks.map((t) => (
-            <span key={t} style={{ bottom: yPct(t) }}>
-              {moneyK(t)}
-            </span>
-          ))}
-        </div>
-        <svg
-          viewBox={`0 0 ${w} ${h}`}
-          className="chart interactive"
-          preserveAspectRatio="none"
-          onPointerLeave={() => props.onCursor?.(null)}
-          onPointerMove={(e) => {
-            if (!n) return
-            props.onCursor?.(cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, pad.l, innerW, w))
-          }}
-          onClick={(e) => {
-            if (!n) return
-            props.onPick?.(cursorIndex(e.clientX, e.currentTarget.getBoundingClientRect(), n, pad.l, innerW, w))
-          }}
-        >
-          {ticks.map((t) => (
-            <line key={t} x1={pad.l} x2={w - pad.r} y1={yPx(t)} y2={yPx(t)} className={Math.abs(t) < 1e-6 ? 'base-line' : 'grid'} />
-          ))}
-          <path d={area} fill="var(--down-fill)" />
-          <path d={d} fill="none" stroke="var(--down)" strokeWidth={1.5} />
-          {props.trough != null && n ? <circle cx={xAt(props.trough)} cy={yPx(props.values[props.trough])} r={4} fill="var(--down)" /> : null}
-          {props.peak != null && n ? <circle cx={xAt(props.peak)} cy={yPx(0)} r={3} fill="var(--gold)" /> : null}
-          {props.cursor != null && n ? <line x1={xAt(props.cursor)} x2={xAt(props.cursor)} y1={pad.t} y2={pad.t + innerH} className="cursor-line" /> : null}
-        </svg>
-        {props.trough != null && n ? (
-          <span className="ml-mark down" style={{ left: `calc(${xPct(props.trough)} - 40px)`, top: `calc(${yTopPct(props.values[props.trough])} - 20px)` }}>
-            谷底 {moneyK(props.values[props.trough])}
-          </span>
-        ) : null}
-        {props.peak != null && n ? (
-          <span className="ml-mark up" style={{ left: `calc(${xPct(props.peak)} - 30px)`, top: `calc(${yTopPct(0)} - 18px)` }}>
-            高点 $0
-          </span>
-        ) : null}
       </div>
       {dates.length ? (
         <div className="ml-x" aria-hidden>
@@ -373,48 +271,45 @@ export function Scatter(props: {
   onPick: (id: string) => void
   height?: number
 }) {
-  const w = 900
-  const h = props.height ?? 240
-  const xs = props.points.map((p) => p.x)
-  const ys = props.points.map((p) => p.y)
-  const minX = Math.min(-1, ...xs)
-  const maxX = 0
-  const minY = Math.min(0, ...ys)
-  const maxY = Math.max(1, ...ys)
-  const xSpan = maxX - minX || 1
-  const ySpan = maxY - minY || 1
-  const px = (x: number) => ((x - minX) / xSpan) * (w - 72) + 56
-  const py = (y: number) => (1 - (y - minY) / ySpan) * (h - 44) + 20
+  if (!props.points.length) return null
+  const w = 640
+  const h = props.height ?? 260
+  const pad = { l: 44, r: 18, t: 14, b: 40 }
+  const innerW = w - pad.l - pad.r
+  const innerH = h - pad.t - pad.b
+  const mae = props.points.map((p) => Math.abs(p.x))
+  const mfe = props.points.map((p) => Math.max(0, p.y))
+  const maxX = Math.max(0.1, ...mae)
+  const maxY = Math.max(0.1, ...mfe)
+  const max = Math.max(maxX, maxY)
+  const px = (v: number) => pad.l + (v / max) * innerW
+  const py = (v: number) => pad.t + (1 - v / max) * innerH
+  const ticks = niceTicks(0, max, 4, 0).filter((t) => t >= 0 && t <= max * 1.02)
+  const axis: CSSProperties = { fontSize: 11, fill: 'var(--t3)' }
   const pctL = (v: number) => `${Math.round(v * 100)}%`
-  const xTicks = [...new Set([minX, (minX + maxX) / 2, 0])]
-  const yTicks = [...new Set([minY, (minY + maxY) / 2, maxY])]
-  const axis = { fontSize: 11, fill: 'var(--muted)' }
   return (
     <div>
       <svg viewBox={`0 0 ${w} ${h}`} className="chart scatter">
-        <line x1={px(minX)} x2={px(maxX)} y1={py(0)} y2={py(0)} className="grid" />
-        <line x1={px(0)} x2={px(0)} y1={py(maxY)} y2={py(minY)} className="grid" />
-        {xTicks.map((t) => (
-          <g key={`x${t}`}>
-            <line x1={px(t)} x2={px(t)} y1={py(minY)} y2={py(minY) + 4} className="grid" />
-            <text x={px(t)} y={h - 6} textAnchor="middle" style={axis}>
+        {ticks.map((t) => (
+          <g key={t}>
+            <line x1={px(t)} x2={px(t)} y1={pad.t} y2={pad.t + innerH} className="grid" />
+            <line x1={pad.l} x2={pad.l + innerW} y1={py(t)} y2={py(t)} className={t === 0 ? 'base-line' : 'grid'} />
+            <text x={px(t)} y={h - 18} textAnchor="middle" style={axis}>
               {pctL(t)}
             </text>
+            {t > 0 ? (
+              <text x={pad.l - 8} y={py(t) + 4} textAnchor="end" style={axis}>
+                {pctL(t)}
+              </text>
+            ) : null}
           </g>
         ))}
-        {yTicks.map((t) => (
-          <g key={`y${t}`}>
-            <line x1={px(minX)} x2={px(minX) + 4} y1={py(t)} y2={py(t)} className="grid" />
-            <text x={px(minX) - 6} y={py(t) + 4} textAnchor="end" style={axis}>
-              {pctL(t)}
-            </text>
-          </g>
-        ))}
+        <line x1={px(0)} x2={px(max)} y1={py(0)} y2={py(max)} className="base-line" />
         {props.points.map((p) => (
           <circle
             key={p.id}
-            cx={px(p.x)}
-            cy={py(p.y)}
+            cx={px(Math.abs(p.x))}
+            cy={py(Math.max(0, p.y))}
             r={5}
             fill={p.up ? 'var(--up)' : 'var(--down)'}
             className="dot"
@@ -423,15 +318,27 @@ export function Scatter(props: {
             {p.label ? <title>{p.label}</title> : null}
           </circle>
         ))}
+        <text x={pad.l + innerW / 2} y={h - 4} textAnchor="middle" style={{ ...axis, fontSize: 11 }}>
+          MAE（不利）
+        </text>
+        <text
+          x={12}
+          y={pad.t + innerH / 2}
+          textAnchor="middle"
+          style={{ ...axis, fontSize: 11 }}
+          transform={`rotate(-90 12 ${pad.t + innerH / 2})`}
+        >
+          MFE（有利）
+        </text>
       </svg>
-      <div style={{ display: 'flex', gap: 16, marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+      <div className="scatter-legend">
         <span>
           <i style={{ color: 'var(--up)' }}>●</i> 最终盈利
         </span>
         <span>
           <i style={{ color: 'var(--down)' }}>●</i> 最终亏损
         </span>
-        <span>横轴 MAE · 纵轴 MFE（日线估算）</span>
+        <span>虚线：MFE = |MAE|</span>
       </div>
     </div>
   )
@@ -525,4 +432,249 @@ export function Stat(props: {
     )
   }
   return <div className={cls}>{inner}</div>
+}
+
+export type BarItem = {
+  id: string
+  label: string
+  value: number | null
+  n?: number
+}
+
+export function SignedBars(props: {
+  items: BarItem[]
+  format?: (v: number) => string
+  onPick?: (id: string) => void
+}) {
+  const present = props.items.filter((x) => x.value != null && Number.isFinite(x.value!))
+  if (!present.length) return <p className="tiny">没有可画的数据。</p>
+  const maxAbs = Math.max(...present.map((x) => Math.abs(x.value!)), 1)
+  const fmt = props.format ?? ((v: number) => String(v))
+  return (
+    <div className="signed-bars">
+      {props.items.map((item) => {
+        if (item.value == null || !Number.isFinite(item.value)) {
+          return (
+            <div key={item.id} className="div-bar-row">
+              <span className="div-label wide">{item.label}</span>
+              <div className="div-track" />
+              <span className="div-amt muted">{item.n === 0 ? '无样本' : '—'}</span>
+            </div>
+          )
+        }
+        const width = `${(Math.abs(item.value) / maxAbs) * 50}%`
+        const up = item.value >= 0
+        const row = (
+          <>
+            <span className="div-label wide">{item.label}</span>
+            <div className="div-track">
+              <div className={`div-bar ${up ? 'win' : 'loss'}`} style={{ width }} />
+            </div>
+            <span className={`div-amt ${up ? 'up' : 'down'}`}>
+              {fmt(item.value)}
+              {item.n != null ? <i className="bar-n">n={item.n}</i> : null}
+            </span>
+          </>
+        )
+        if (props.onPick) {
+          return (
+            <button type="button" key={item.id} className="div-bar-row as-btn" onClick={() => props.onPick?.(item.id)}>
+              {row}
+            </button>
+          )
+        }
+        return (
+          <div key={item.id} className="div-bar-row">
+            {row}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+export function MonthBars(props: {
+  items: Array<{ label: string; value: number }>
+  format?: (v: number) => string
+  height?: number
+}) {
+  if (!props.items.length) return null
+  const w = 640
+  const h = props.height ?? 168
+  const pad = { l: 44, r: 12, t: 10, b: 28 }
+  const innerW = w - pad.l - pad.r
+  const innerH = h - pad.t - pad.b
+  const maxAbs = Math.max(...props.items.map((d) => Math.abs(d.value)), 1)
+  const yPx = (v: number) => pad.t + (1 - (v + maxAbs) / (2 * maxAbs)) * innerH
+  const zero = yPx(0)
+  const gap = innerW / props.items.length
+  const bw = Math.max(3, Math.min(18, gap * 0.62))
+  const fmt = props.format ?? moneyK
+  const ticks = niceTicks(-maxAbs, maxAbs, 4, 0)
+  const step = props.items.length > 14 ? 2 : 1
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="chart vbars" preserveAspectRatio="none">
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={pad.l} x2={w - pad.r} y1={yPx(t)} y2={yPx(t)} className={Math.abs(t) < 1e-9 ? 'base-line' : 'grid'} />
+          <text x={pad.l - 6} y={yPx(t) + 3} textAnchor="end" className="chart-label">
+            {fmt(t)}
+          </text>
+        </g>
+      ))}
+      {props.items.map((d, i) => {
+        const x = pad.l + (i + 0.5) * gap - bw / 2
+        const y = Math.min(yPx(d.value), zero)
+        const bh = Math.max(1, Math.abs(yPx(d.value) - zero))
+        return (
+          <g key={`${d.label}-${i}`}>
+            <rect x={x} y={y} width={bw} height={bh} rx={1.5} fill={d.value >= 0 ? 'var(--up)' : 'var(--down)'}>
+              <title>{`${d.label} ${fmt(d.value)}`}</title>
+            </rect>
+            {i % step === 0 || i === props.items.length - 1 ? (
+              <text x={x + bw / 2} y={h - 8} textAnchor="middle" className="chart-label">
+                {d.label}
+              </text>
+            ) : null}
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
+export function Histogram(props: {
+  values: number[]
+  format?: (v: number) => string
+  bins?: number
+  height?: number
+}) {
+  if (props.values.length < 3) return <p className="tiny">样本太少，不画分布。</p>
+  const w = 640
+  const h = props.height ?? 150
+  const pad = { l: 36, r: 12, t: 10, b: 28 }
+  const innerW = w - pad.l - pad.r
+  const innerH = h - pad.t - pad.b
+  let min = Math.min(...props.values)
+  let max = Math.max(...props.values)
+  if (min === max) {
+    min -= 1
+    max += 1
+  }
+  if (min > 0) min = 0
+  if (max < 0) max = 0
+  const binCount = props.bins ?? 9
+  const width = (max - min) / binCount
+  const counts = Array.from({ length: binCount }, () => 0)
+  for (const v of props.values) {
+    const idx = Math.min(binCount - 1, Math.max(0, Math.floor((v - min) / width)))
+    counts[idx] += 1
+  }
+  const maxC = Math.max(...counts, 1)
+  const gap = innerW / binCount
+  const bw = Math.max(4, gap * 0.72)
+  const fmt = props.format ?? ((v: number) => v.toFixed(0))
+  const xAt = (edge: number) => pad.l + ((edge - min) / (max - min || 1)) * innerW
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="chart hist" preserveAspectRatio="none">
+      <line x1={pad.l} x2={w - pad.r} y1={pad.t + innerH} y2={pad.t + innerH} className="base-line" />
+      {min < 0 && max > 0 ? <line x1={xAt(0)} x2={xAt(0)} y1={pad.t} y2={pad.t + innerH} className="base-line" /> : null}
+      {counts.map((c, i) => {
+        const lo = min + i * width
+        const hi = lo + width
+        const mid = (lo + hi) / 2
+        const x = pad.l + i * gap + (gap - bw) / 2
+        const bh = (c / maxC) * innerH
+        return (
+          <rect
+            key={i}
+            x={x}
+            y={pad.t + innerH - bh}
+            width={bw}
+            height={Math.max(c ? 2 : 0, bh)}
+            rx={1.5}
+            fill={mid >= 0 ? 'var(--up)' : 'var(--down)'}
+            opacity={c ? 0.9 : 0.2}
+          >
+            <title>{`${fmt(lo)} ~ ${fmt(hi)} · ${c} 日`}</title>
+          </rect>
+        )
+      })}
+      <text x={pad.l} y={h - 8} className="chart-label">
+        {fmt(min)}
+      </text>
+      {min < 0 && max > 0 ? (
+        <text x={xAt(0)} y={h - 8} textAnchor="middle" className="chart-label">
+          0
+        </text>
+      ) : null}
+      <text x={w - pad.r} y={h - 8} textAnchor="end" className="chart-label">
+        {fmt(max)}
+      </text>
+    </svg>
+  )
+}
+
+export function StemStrip(props: {
+  points: Array<{ id: string; t: number; v: number; label?: string }>
+  format?: (v: number) => string
+  height?: number
+  onPick?: (id: string) => void
+}) {
+  if (!props.points.length) return null
+  const w = 640
+  const h = props.height ?? 96
+  const pad = { l: 44, r: 12, t: 8, b: 8 }
+  const innerW = w - pad.l - pad.r
+  const innerH = h - pad.t - pad.b
+  const t0 = Math.min(...props.points.map((p) => p.t))
+  const t1 = Math.max(...props.points.map((p) => p.t))
+  const spanT = Math.max(t1 - t0, 1)
+  const maxAbs = Math.max(...props.points.map((p) => Math.abs(p.v)), 1)
+  const xAt = (t: number) => pad.l + ((t - t0) / spanT) * innerW
+  const yPx = (v: number) => pad.t + (1 - (v + maxAbs) / (2 * maxAbs)) * innerH
+  const zero = yPx(0)
+  const fmt = props.format ?? moneyK
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="chart stem" preserveAspectRatio="none">
+      <line x1={pad.l} x2={w - pad.r} y1={zero} y2={zero} className="base-line" />
+      <text x={pad.l - 6} y={zero + 3} textAnchor="end" className="chart-label">
+        {fmt(0)}
+      </text>
+      {props.points.map((p) => (
+        <line
+          key={p.id}
+          x1={xAt(p.t)}
+          x2={xAt(p.t)}
+          y1={zero}
+          y2={yPx(p.v)}
+          stroke={p.v >= 0 ? 'var(--up)' : 'var(--down)'}
+          strokeWidth={1.6}
+          strokeLinecap="round"
+          className="stem-line"
+          onClick={() => props.onPick?.(p.id)}
+        >
+          <title>{p.label || fmt(p.v)}</title>
+        </line>
+      ))}
+    </svg>
+  )
+}
+
+export function CoverageMeter(props: { label: string; value: number; of?: number; note?: string }) {
+  const pct = props.of != null && props.of > 0 ? Math.max(0, Math.min(1, props.value / props.of)) : Math.max(0, Math.min(1, props.value))
+  const shown =
+    props.of != null ? `${props.value}/${props.of}` : `${Math.round(pct * 100)}%`
+  return (
+    <div className="meter-row">
+      <span className="meter-k">{props.label}</span>
+      <div className="meter-track" aria-hidden>
+        <span className="meter-fill" style={{ width: `${pct * 100}%` }} />
+      </div>
+      <span className="meter-v">
+        {shown}
+        {props.note ? <i> {props.note}</i> : null}
+      </span>
+    </div>
+  )
 }

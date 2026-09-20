@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Brand, ThemeToggle } from './chrome.tsx'
-import { AreaDrawdown, CaptureBar, DollarDrawdown, MaeBar, MultiLine, Scatter, Stat } from './charts.tsx'
+import { CaptureBar, CoverageMeter, Histogram, MaeBar, MonthBars, MultiLine, Scatter, SignedBars, Stat, StemStrip } from './charts.tsx'
 import { InsightDrawer, coverageLabel, type Insight } from './InsightDrawer.tsx'
 import { PathDrawer } from './PathDrawer.tsx'
 import { TABS, tabFromView, viewOf, type Tab } from './views.ts'
@@ -124,6 +124,68 @@ function statusLabel(s: GroupRow): string {
   if (s.status === 'raw') return '仅观察'
   if (s.status === 'observe') return '样本不足'
   return '探索性'
+}
+
+function monthlyDeltas(equity: EquityPoint[]): Array<{ label: string; value: number }> {
+  if (equity.length < 2) return []
+  const lastByMonth = new Map<string, number>()
+  for (const e of equity) lastByMonth.set(e.date.slice(0, 7), e.equity)
+  const months = [...lastByMonth.keys()].sort()
+  return months.map((m, i) => {
+    const last = lastByMonth.get(m) ?? 0
+    const prev = i === 0 ? equity[0].equity : (lastByMonth.get(months[i - 1]) ?? last)
+    return { label: m.slice(2), value: last - prev }
+  })
+}
+
+function monthlyIndexRets(equity: EquityPoint[]): Array<{ label: string; value: number }> {
+  if (equity.length < 2) return []
+  const lastByMonth = new Map<string, number>()
+  for (const e of equity) lastByMonth.set(e.date.slice(0, 7), e.index)
+  const months = [...lastByMonth.keys()].sort()
+  return months.map((m, i) => {
+    const last = lastByMonth.get(m) ?? 100
+    const prev = i === 0 ? equity[0].index : (lastByMonth.get(months[i - 1]) ?? last)
+    return { label: m.slice(2), value: prev ? last / prev - 1 : 0 }
+  })
+}
+
+function dailyIndexRets(equity: EquityPoint[]): number[] {
+  const out: number[] = []
+  for (let i = 1; i < equity.length; i++) {
+    const prev = equity[i - 1].index
+    if (prev) out.push(equity[i].index / prev - 1)
+  }
+  return out
+}
+
+function dailyDeltas(equity: EquityPoint[]): number[] {
+  const out: number[] = []
+  for (let i = 1; i < equity.length; i++) out.push(equity[i].equity - equity[i - 1].equity)
+  return out
+}
+
+function GroupViz(props: { title: string; rows: GroupRow[]; onPick: (row: GroupRow) => void }) {
+  const items = props.rows.map((r) => ({
+    id: r.id,
+    label: r.label,
+    value: r.n > 0 ? r.expectancy : null,
+    n: r.n,
+  }))
+  return (
+    <article className="panel">
+      <h3>{props.title}</h3>
+      <p className="muted">按历史单笔均值。无样本不画成 0。点一条打开该组交易。</p>
+      <SignedBars items={items} format={money} onPick={(id) => {
+        const row = props.rows.find((r) => r.id === id)
+        if (row && row.n > 0) props.onPick(row)
+      }} />
+      <details className="fold-block">
+        <summary>明细表</summary>
+        <GroupTable rows={props.rows} onPick={props.onPick} />
+      </details>
+    </article>
+  )
 }
 
 function GroupTable(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }) {
@@ -291,6 +353,78 @@ function BenchUnavailablePanel(props: { missing: string[]; onSupplement: () => v
   )
 }
 
+type ChartRange = { lo: number; hi: number } | null
+
+function BookPathChart(props: {
+  mode: 'account' | 'sleeve'
+  equity: EquityPoint[]
+  hover: EquityPoint | null
+  cursor: number | null
+  range: ChartRange
+  marks: number[]
+  markers?: Array<{ i: number; value: number; text: string; tone?: 'up' | 'down' }>
+  onCursor: (i: number | null) => void
+  onRange: (range: { lo: number; hi: number } | null) => void
+}) {
+  const last = props.equity.at(-1)
+  if (props.mode === 'sleeve') {
+    return (
+      <div className="chart-wrap tall">
+        <MultiLine
+          height={260}
+          baseline={0}
+          tickFormat={moneyK}
+          dates={props.equity.map((e) => e.date)}
+          endLabel={last ? { value: last.equity, text: `当前 ${money(last.equity)}` } : undefined}
+          markers={props.markers}
+          cursor={props.cursor}
+          range={props.range}
+          marks={props.marks}
+          onCursor={props.onCursor}
+          onRange={props.onRange}
+          series={[{ values: props.equity.map((e) => e.equity), color: 'var(--gold)', width: 2 }]}
+        />
+        {props.hover ? (
+          <div className="chart-tip">
+            <b>{props.hover.date}</b>
+            <span>盯市盈亏 {money(props.hover.equity)}</span>
+            <span>现金 {money(props.hover.cash)}</span>
+            <span>未实现 {money(props.hover.mtm)}</span>
+            <span>回撤 {pct(props.hover.drawdown)}</span>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+  return (
+    <div className="chart-wrap tall">
+      <MultiLine
+        height={260}
+        baseline={100}
+        dates={props.equity.map((e) => e.date)}
+        endLabel={last ? { value: last.index, text: `当前 ${(last.index / 100).toFixed(3)}` } : undefined}
+        cursor={props.cursor}
+        range={props.range}
+        marks={props.marks}
+        onCursor={props.onCursor}
+        onRange={props.onRange}
+        series={[{ values: props.equity.map((e) => e.index), color: 'var(--gold)', fill: 'var(--gold-fill)', width: 2 }]}
+      />
+      {props.hover ? (
+        <div className="chart-tip">
+          <b>{props.hover.date}</b>
+          <span>账户财富 {(props.hover.index / 100).toFixed(3)}</span>
+          <span>
+            当日收益 {dayRet(props.equity, props.cursor ?? 0) == null ? '—' : pct(dayRet(props.equity, props.cursor ?? 0)!)}
+          </span>
+          <span>净现金流 {props.hover.cashflow ? money(props.hover.cashflow) : '$0'}</span>
+          <span>回撤 {pct(props.hover.drawdown)}</span>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function TradeBenchPanel(props: {
   rows: TradeBenchRow[]
   n: number
@@ -301,6 +435,7 @@ function TradeBenchPanel(props: {
 }) {
   const sorted = [...props.rows].sort((a, b) => (b.excess ?? -Infinity) - (a.excess ?? -Infinity))
   const allMissing = props.rows.length > 0 && props.rows.every((r) => r.spxRet == null)
+  const excesses = props.rows.map((r) => r.excess).filter((x): x is number => x != null)
   return (
     <article className="panel wide">
       <h3>交易级基准比较</h3>
@@ -324,6 +459,7 @@ function TradeBenchPanel(props: {
             <span>平均超额收益</span>
             <b>{props.meanExcess == null ? '—' : <span className={clsPnl(props.meanExcess)}>{pct(props.meanExcess)}</span>}</b>
           </div>
+          {excesses.length >= 3 ? <Histogram values={excesses} format={pct} /> : null}
           {sorted.length ? (
             <table className="grid trips">
               <thead>
@@ -700,11 +836,6 @@ export function Dashboard(props: {
       return e.equity - peak
     })
   }, [sleeveOk, book.equity])
-  const ddPeakIdx = useMemo(() => {
-    if (!book.equity.length || p.ddStart == null) return null
-    const i = book.equity.findIndex((e) => e.date === p.ddStart)
-    return i >= 0 ? i : null
-  }, [book.equity, p.ddStart])
   const tradeBench = useMemo(() => tradeBenchComparison(book.episodes, book.bars.SPY || book.bars['^GSPC'] || []), [book.episodes, book.bars])
   const benchMissing = useMemo(() => {
     const m: string[] = []
@@ -718,11 +849,25 @@ export function Dashboard(props: {
     const peakIdx = book.equity.reduce((best, e, i) => (e.equity > book.equity[best].equity ? i : best), 0)
     const troughIdx = book.equity.reduce((best, e, i) => (e.equity < book.equity[best].equity ? i : best), 0)
     const out: Array<{ i: number; value: number; text: string; tone?: 'up' | 'down' }> = []
-    if (book.equity[peakIdx].equity > 0) {
-      out.push({ i: peakIdx, value: book.equity[peakIdx].equity, text: `峰值 ${moneyK(book.equity[peakIdx].equity)}`, tone: 'up' })
+    const last = book.equity.at(-1)!.equity
+    const span = Math.max(Math.abs(last), 1)
+    if (book.equity[peakIdx].equity > 0 && peakIdx !== book.equity.length - 1 && book.equity[peakIdx].equity - last > span * 0.08) {
+      const p = book.equity[peakIdx]
+      out.push({
+        i: peakIdx,
+        value: p.equity,
+        text: `峰值 ${p.date.slice(5)} ${money(p.equity)}`,
+        tone: 'up',
+      })
     }
-    if (book.equity[troughIdx].equity < 0) {
-      out.push({ i: troughIdx, value: book.equity[troughIdx].equity, text: `谷底 ${moneyK(book.equity[troughIdx].equity)}`, tone: 'down' })
+    if (book.equity[troughIdx].equity < 0 && troughIdx !== book.equity.length - 1 && last - book.equity[troughIdx].equity > span * 0.08) {
+      const t = book.equity[troughIdx]
+      out.push({
+        i: troughIdx,
+        value: t.equity,
+        text: `谷底 ${t.date.slice(5)} ${money(t.equity)}`,
+        tone: 'down',
+      })
     }
     return out
   }, [sleeveOk, book.equity])
@@ -927,9 +1072,104 @@ export function Dashboard(props: {
       </nav>
 
       {tab === 'ledger' ? (
-        <div className="grid-2">
-          <article className="panel">
-            <h3>这本账赚没赚</h3>
+        <article className="panel">
+          <h3>
+            {accountOk ? '账户财富路径' : '正股子账本盈亏走势'}
+            {!accountOk && sleeveOk ? (
+              <span className="pill" style={{ marginLeft: 8 }}>
+                子账本口径 · 包含估算值
+              </span>
+            ) : null}
+          </h3>
+          <p className="muted">
+            {accountOk
+              ? '账户财富指数，起点=1.00，已剥离出入金。三条对比曲线在「基准比较」。'
+              : sleeveOk
+                ? '展示已导入正股交易产生的累计盯市盈亏，不代表完整账户收益。缺少历史价格的日期使用最近可用价格估算。'
+                : naReason}
+          </p>
+          {fail ? (
+            <p className="tiny">路径校验未通过，本图禁用，避免把错误路径当成账户收益。</p>
+          ) : accountOk && book.equity.length ? (
+            <BookPathChart
+              mode="account"
+              equity={book.equity}
+              hover={hover}
+              cursor={cursor}
+              range={range}
+              marks={cfMarks}
+              onCursor={setCursor}
+              onRange={setRange}
+            />
+          ) : sleeveOk ? (
+            <BookPathChart
+              mode="sleeve"
+              equity={book.equity}
+              hover={hover}
+              cursor={cursor}
+              range={range}
+              marks={cfMarks}
+              markers={sleeveMarkers}
+              onCursor={setCursor}
+              onRange={setRange}
+            />
+          ) : (
+            <p className="tiny">还没有可画的正股路径。</p>
+          )}
+          {range && range.hi !== range.lo ? (
+            <p className="tiny">
+              已框选 {book.equity[range.lo]?.date} 至 {book.equity[range.hi]?.date}。交易级指标按开仓日筛选；账户级 TWR / XIRR /
+              回撤不重算。
+              <button type="button" className="link" onClick={() => setRange(null)}>
+                重置范围
+              </button>
+            </p>
+          ) : book.equity.length ? (
+            <p className="tiny">在图上拖动可框选查看区间。现金流日期有浅色标记。</p>
+          ) : null}
+          {accountOk ? (
+            <p className="path-recon">
+              TWR {signedPct(p.twr)}
+              <span className="kpi-sep"> · </span>
+              已实现 {signedMoney(p.realizedPnl)}
+              <span className="kpi-sep"> · </span>
+              未实现 {signedMoney(p.unrealizedPnl)}
+            </p>
+          ) : sleeveOk ? (
+            <p className="path-recon">
+              已实现 {signedMoney(p.realizedPnl)}
+              <span className="kpi-sep"> · </span>
+              未实现 {signedMoney(p.unrealizedPnl)}
+              <span className="kpi-sep"> · </span>
+              勾稽 {signedMoney(p.reconDifference, 2)}
+              <span className="kpi-sep"> → </span>
+              累计 {signedMoney(p.netPnl)}
+            </p>
+          ) : null}
+
+          {book.equity.length > 2 && (accountOk || sleeveOk) ? (
+            <div className="grid-2" style={{ marginTop: 16 }}>
+              <div>
+                <h3 style={{ fontSize: 13, margin: '0 0 4px' }}>{accountOk ? '月度 TWR' : '月度盯市变动'}</h3>
+                <p className="tiny">{accountOk ? '当月财富指数相对上月末。已剥离出入金。' : '子账本月末盯市相对上月末的差额，不是账户月收益。'}</p>
+                <MonthBars
+                  items={accountOk ? monthlyIndexRets(book.equity) : monthlyDeltas(book.equity)}
+                  format={accountOk ? (v) => pct(v) : moneyK}
+                />
+              </div>
+              <div>
+                <h3 style={{ fontSize: 13, margin: '0 0 4px' }}>{accountOk ? '日收益分布' : '日变动分布'}</h3>
+                <p className="tiny">{accountOk ? '账户日收益。缺失日不补 0。' : '相邻交易日盯市差额。缺行情日不补 0。'}</p>
+                <Histogram
+                  values={accountOk ? dailyIndexRets(book.equity) : dailyDeltas(book.equity)}
+                  format={accountOk ? (v) => pct(v) : moneyK}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          <details className="fold-block">
+            <summary>对账明细</summary>
             <p className="muted">
               {accountOk
                 ? '日收益把当日现金流当作开盘已入账（权重 1）。XIRR 不根据成交猜测现金流。'
@@ -1083,9 +1323,10 @@ export function Dashboard(props: {
                 下载排除明细（{book.excludedRows.length}）
               </button>
             ) : null}
-          </article>
-          <article className="panel">
-            <h3>数据覆盖</h3>
+          </details>
+
+          <details className="fold-block">
+            <summary>数据覆盖</summary>
             <p className="muted">缺失不是零。0 只用于明确确认金额为零。点击状态查看原因。</p>
             <table className="grid trips">
               <thead>
@@ -1110,8 +1351,8 @@ export function Dashboard(props: {
                 ))}
               </tbody>
             </table>
-          </article>
-        </div>
+          </details>
+        </article>
       ) : null}
 
       {tab === 'quality' ? (
@@ -1209,36 +1450,72 @@ export function Dashboard(props: {
             </article>
             <article className="panel wide">
               <h3>ATR 标准化盈亏</h3>
-              <p className="muted">用开仓前 ATR×数量当风险单位。没有足够日线时记为缺失，不用 2% 代替。</p>
-              <div className="kv-grid">
-                <span>有效 n</span>
-                <b>{p.atrR.n}</b>
-                <span>平均</span>
-                <b>{p.atrR.mean != null ? p.atrR.mean.toFixed(2) : '—'}</b>
-                <span>中位</span>
-                <b>{p.atrR.median != null ? p.atrR.median.toFixed(2) : '—'}</b>
-                <span>左尾 5% / 10%</span>
-                <b>
-                  {p.atrR.p05 != null ? p.atrR.p05.toFixed(2) : '—'} / {p.atrR.p10 != null ? p.atrR.p10.toFixed(2) : '—'}
-                </b>
-              </div>
-              <RDistribution trips={scoped} />
+              {p.atrR.n === 0 ? (
+                <p className="tiny">
+                  没有足够日线，ATR-R 记为缺失，不用 2% 代替。可计算 {p.pathComputable} · 同日排除 {p.pathSameDayExcluded} · 缺行情{' '}
+                  {p.pathMissingExcluded}
+                </p>
+              ) : (
+                <>
+                  <p className="muted">用开仓前 ATR×数量当风险单位。没有足够日线时记为缺失，不用 2% 代替。</p>
+                  <div className="kv-grid">
+                    <span>有效 n</span>
+                    <b>{p.atrR.n}</b>
+                    <span>平均</span>
+                    <b>{p.atrR.mean != null ? p.atrR.mean.toFixed(2) : '—'}</b>
+                    <span>中位</span>
+                    <b>{p.atrR.median != null ? p.atrR.median.toFixed(2) : '—'}</b>
+                    <span>左尾 5% / 10%</span>
+                    <b>
+                      {p.atrR.p05 != null ? p.atrR.p05.toFixed(2) : '—'} / {p.atrR.p10 != null ? p.atrR.p10.toFixed(2) : '—'}
+                    </b>
+                  </div>
+                  <RDistribution trips={scoped} />
+                </>
+              )}
             </article>
           </div>
           <article className="panel" style={{ marginTop: 12 }}>
             <h3>日线估算 MAE × MFE</h3>
-            <p className="muted">只画可计算的跨日往返。点一下打开路径。横轴不利、纵轴有利。</p>
-            <Scatter
-              points={scatter.map((t) => ({
-                id: t.id,
-                x: t.maePct || 0,
-                y: t.mfePct || 0,
-                up: t.realizedPnl >= 0,
-                label: `${t.symbol} · ${money(t.realizedPnl)} · MAE ${t.maePct != null ? pctPlain(t.maePct, 1) : 'N/A'} · MFE ${t.mfePct != null ? pctPlain(t.mfePct, 1) : 'N/A'}`,
-              }))}
-              onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
-            />
+            {scatter.length === 0 ? (
+              <p className="tiny">
+                没有可画的跨日路径。同日往返不计算；缺日线记为缺失。可计算 {p.pathComputable} · 同日排除 {p.pathSameDayExcluded} ·
+                缺行情 {p.pathMissingExcluded}
+              </p>
+            ) : (
+              <>
+                <p className="muted">只画可计算的跨日往返。点一下打开路径。横轴越右越不利，纵轴越上越有利。</p>
+                <Scatter
+                  points={scatter.map((t) => ({
+                    id: t.id,
+                    x: t.maePct || 0,
+                    y: t.mfePct || 0,
+                    up: t.realizedPnl >= 0,
+                    label: `${t.symbol} · ${money(t.realizedPnl)} · MAE ${t.maePct != null ? pctPlain(t.maePct, 1) : 'N/A'} · MFE ${t.mfePct != null ? pctPlain(t.mfePct, 1) : 'N/A'}`,
+                  }))}
+                  onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
+                />
+              </>
+            )}
           </article>
+          {scoped.some((t) => t.closeTime) ? (
+            <article className="panel" style={{ marginTop: 12 }}>
+              <h3>单笔盈亏时间线</h3>
+              <p className="muted">每根是一笔已闭环持仓片段的已实现盈亏，按平仓时间排列。点一下打开路径。</p>
+              <StemStrip
+                points={scoped
+                  .filter((t) => t.closeTime)
+                  .map((t) => ({
+                    id: t.id,
+                    t: t.closeTime!.getTime(),
+                    v: t.realizedPnl,
+                    label: `${t.symbol} · ${money(t.realizedPnl)}`,
+                  }))}
+                format={money}
+                onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
+              />
+            </article>
+          ) : null}
           <div className="table-hd">
             <div className="sorts">
               {(['time', 'pnl', 'r', 'hold'] as const).map((k) => (
@@ -1358,132 +1635,92 @@ export function Dashboard(props: {
 
       {tab === 'bench' ? (
         <div className="bench">
-          {!accountOk ? <BenchUnavailablePanel missing={benchMissing} onSupplement={openAccountSupplement} /> : null}
-          <div className="grid-2">
-            <article className="panel wide">
-              <h3>
-                {accountOk ? '三条财富曲线' : '正股交易子账本盈亏走势'}
-                {!accountOk && sleeveOk ? (
-                  <span className="pill" style={{ marginLeft: 8 }}>
-                    子账本口径 · 包含估算值
-                  </span>
-                ) : null}
-              </h3>
-              <p className="muted">
-                {accountOk
-                  ? '三条线都是财富指数，起点=1.00，已剥离出入金。现金为虚线，基准为灰实线。优先 SPY 复权全收益；没有 SPY 时用 SPX 价格指数（不含股息）。'
-                  : sleeveOk
-                    ? '展示已导入正股交易产生的累计盯市盈亏，不代表完整账户收益。缺少历史价格的日期使用最近可用价格估算。'
-                    : naReason}
-              </p>
-              {fail ? (
-                <p className="tiny">路径校验未通过，本图禁用，避免把错误财富曲线当成账户收益。</p>
-              ) : accountOk && book.equity.length ? (
-                <div className="chart-wrap tall">
-                  <MultiLine
-                    height={260}
-                    baseline={100}
-                    cursor={cursor}
-                    range={range}
-                    marks={cfMarks}
-                    dates={book.equity.map((e) => e.date)}
-                    onCursor={setCursor}
-                    onRange={setRange}
-                    series={[
-                      { values: book.equity.map((e) => e.cashIndex), color: 'var(--t3)', width: 1.2, dash: '5 4' },
-                      { values: book.equity.map((e) => e.benchIndex), color: 'var(--t2)', width: 1.4 },
-                      { values: book.equity.map((e) => e.index), color: 'var(--gold)', fill: 'var(--gold-fill)', width: 2 },
-                    ]}
-                  />
-                  {hover ? (
-                    <div className="chart-tip">
-                      <b>{hover.date}</b>
-                      <span>账户财富 {(hover.index / 100).toFixed(3)}</span>
-                      <span>基准财富 {(hover.benchIndex / 100).toFixed(3)}</span>
-                      <span>相对财富比 {hover.benchIndex ? pct(hover.index / hover.benchIndex - 1) : '—'}</span>
-                      <span>当日收益 {dayRet(book.equity, cursor ?? 0) == null ? '—' : pct(dayRet(book.equity, cursor ?? 0)!)}</span>
-                      <span>净现金流 {hover.cashflow ? money(hover.cashflow) : '$0'}</span>
-                      <span>回撤 {pct(hover.drawdown)}</span>
-                      <span>净敞口 {pctPlain(hover.netExposure, 1)}</span>
-                    </div>
-                  ) : null}
-                </div>
-              ) : sleeveOk ? (
-                <div className="chart-wrap tall">
-                  <MultiLine
-                    height={260}
-                    baseline={0}
-                    tickFormat={moneyK}
-                    dates={book.equity.map((e) => e.date)}
-                    zeroFill
-                    endLabel={{ value: book.equity.at(-1)!.equity, text: `当前 ${money(book.equity.at(-1)!.equity)}` }}
-                    markers={sleeveMarkers}
-                    cursor={cursor}
-                    range={range}
-                    marks={cfMarks}
-                    onCursor={setCursor}
-                    onRange={setRange}
-                    series={[{ values: book.equity.map((e) => e.equity), color: 'var(--gold)', width: 2 }]}
-                  />
-                  {hover ? (
-                    <div className="chart-tip">
-                      <b>{hover.date}</b>
-                      <span>盯市盈亏 {money(hover.equity)}</span>
-                      <span>现金 {money(hover.cash)}</span>
-                      <span>未实现 {money(hover.mtm)}</span>
-                      <span>回撤 {pct(hover.drawdown)}</span>
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <p className="tiny">还没有可画的正股路径。</p>
-              )}
-              {range && range.hi !== range.lo ? (
-                <p className="tiny">
-                  已框选 {book.equity[range.lo]?.date} 至 {book.equity[range.hi]?.date}。交易级指标按开仓日筛选；账户级 TWR / XIRR /
-                  回撤不重算。
-                  <button type="button" className="link" onClick={() => setRange(null)}>
-                    重置范围
-                  </button>
+          {!accountOk ? (
+            <>
+              <BenchUnavailablePanel missing={benchMissing} onSupplement={openAccountSupplement} />
+              <TradeBenchPanel
+                rows={tradeBench.rows}
+                n={tradeBench.n}
+                beat={tradeBench.beat}
+                medianExcess={tradeBench.medianExcess}
+                meanExcess={tradeBench.meanExcess}
+                onOpenTrip={openTrip}
+              />
+            </>
+          ) : (
+            <div className="grid-2">
+              <article className="panel wide">
+                <h3>三条财富曲线</h3>
+                <p className="muted">
+                  三条线都是财富指数，起点=1.00，已剥离出入金。现金为虚线，基准为灰实线。优先 SPY 复权全收益；没有 SPY 时用 SPX 价格指数（不含股息）。
                 </p>
-              ) : (
-                <p className="tiny">在图上拖动可框选查看区间。现金流日期有浅色标记。</p>
-              )}
-            </article>
-            <article className="panel">
-              <h3>基准结果</h3>
-              {accountOk ? (
-                <>
-                  <p className="muted">
-                    {p.benchKind === 'spy-total-return'
-                      ? '∏(1+rp)/∏(1+rb)−1，基准为 SPY 复权全收益。'
-                      : '∏(1+rp)/∏(1+rb)−1，基准为 SPX 价格指数，不含股息。'}
-                  </p>
-                  <div className="kv-grid">
-                    <span>账户终值</span>
-                    <b>{p.finalEquity == null ? 'N/A' : moneyAbs(p.finalEquity)}</b>
-                    <span>相对持有现金</span>
-                    <b>{signedPct(p.relativeCash)}</b>
-                    <span>相对基准财富</span>
-                    <b>
-                      <button type="button" className="link" onClick={() => openInsight({ kind: 'spx' })}>
-                        {signedPct(p.relativeSpx)}
-                      </button>
-                    </b>
+                {fail ? (
+                  <p className="tiny">路径校验未通过，本图禁用，避免把错误财富曲线当成账户收益。</p>
+                ) : book.equity.length ? (
+                  <div className="chart-wrap tall">
+                    <MultiLine
+                      height={260}
+                      baseline={100}
+                      cursor={cursor}
+                      range={range}
+                      marks={cfMarks}
+                      dates={book.equity.map((e) => e.date)}
+                      onCursor={setCursor}
+                      onRange={setRange}
+                      series={[
+                        { values: book.equity.map((e) => e.cashIndex), color: 'var(--t3)', width: 1.2, dash: '5 4' },
+                        { values: book.equity.map((e) => e.benchIndex), color: 'var(--t2)', width: 1.4 },
+                        { values: book.equity.map((e) => e.index), color: 'var(--gold)', fill: 'var(--gold-fill)', width: 2 },
+                      ]}
+                    />
+                    {hover ? (
+                      <div className="chart-tip">
+                        <b>{hover.date}</b>
+                        <span>账户财富 {(hover.index / 100).toFixed(3)}</span>
+                        <span>基准财富 {(hover.benchIndex / 100).toFixed(3)}</span>
+                        <span>相对财富比 {hover.benchIndex ? pct(hover.index / hover.benchIndex - 1) : '—'}</span>
+                        <span>当日收益 {dayRet(book.equity, cursor ?? 0) == null ? '—' : pct(dayRet(book.equity, cursor ?? 0)!)}</span>
+                        <span>净现金流 {hover.cashflow ? money(hover.cashflow) : '$0'}</span>
+                        <span>回撤 {pct(hover.drawdown)}</span>
+                        <span>净敞口 {pctPlain(hover.netExposure, 1)}</span>
+                      </div>
+                    ) : null}
                   </div>
-                </>
-              ) : (
-                <div className="status-strip compact">
-                  <b>账户级基准指标暂不可用</b>
-                  <span>TWR · XIRR · Alpha · Beta · 财富曲线</span>
-                  <span>缺少期初净资产及完整现金流</span>
-                  <button type="button" className="btn-primary sm" onClick={openAccountSupplement}>
-                    补充数据
-                  </button>
+                ) : (
+                  <p className="tiny">还没有可画的正股路径。</p>
+                )}
+                {range && range.hi !== range.lo ? (
+                  <p className="tiny">
+                    已框选 {book.equity[range.lo]?.date} 至 {book.equity[range.hi]?.date}。交易级指标按开仓日筛选；账户级 TWR / XIRR /
+                    回撤不重算。
+                    <button type="button" className="link" onClick={() => setRange(null)}>
+                      重置范围
+                    </button>
+                  </p>
+                ) : (
+                  <p className="tiny">在图上拖动可框选查看区间。现金流日期有浅色标记。</p>
+                )}
+              </article>
+              <article className="panel">
+                <h3>基准结果</h3>
+                <p className="muted">
+                  {p.benchKind === 'spy-total-return'
+                    ? '∏(1+rp)/∏(1+rb)−1，基准为 SPY 复权全收益。'
+                    : '∏(1+rp)/∏(1+rb)−1，基准为 SPX 价格指数，不含股息。'}
+                </p>
+                <div className="kv-grid">
+                  <span>账户终值</span>
+                  <b>{p.finalEquity == null ? 'N/A' : moneyAbs(p.finalEquity)}</b>
+                  <span>相对持有现金</span>
+                  <b>{signedPct(p.relativeCash)}</b>
+                  <span>相对基准财富</span>
+                  <b>
+                    <button type="button" className="link" onClick={() => openInsight({ kind: 'spx' })}>
+                      {signedPct(p.relativeSpx)}
+                    </button>
+                  </b>
                 </div>
-              )}
-            </article>
-            {accountOk ? (
+              </article>
               <article className="panel">
                 <h3>超额收益诊断（Alpha）</h3>
                 {!p.alpha || !p.alpha.valid ? (
@@ -1520,18 +1757,8 @@ export function Dashboard(props: {
                   </>
                 )}
               </article>
-            ) : null}
-          </div>
-          {!accountOk ? (
-            <TradeBenchPanel
-              rows={tradeBench.rows}
-              n={tradeBench.n}
-              beat={tradeBench.beat}
-              medianExcess={tradeBench.medianExcess}
-              meanExcess={tradeBench.meanExcess}
-              onOpenTrip={openTrip}
-            />
-          ) : null}
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -1563,15 +1790,40 @@ export function Dashboard(props: {
               {fail ? (
                 <p className="tiny">路径异常，回撤图禁用。</p>
               ) : accountOk && book.equity.length ? (
-                <div className="chart-wrap">
-                  <AreaDrawdown
-                    height={180}
-                    points={book.equity.map((e) => e.drawdown)}
+                <div className="chart-wrap tall">
+                  <MultiLine
+                    height={260}
+                    baseline={0}
+                    tickFormat={(v) => pct(v)}
+                    dates={book.equity.map((e) => e.date)}
                     cursor={cursor}
                     range={range}
-                    trough={troughIdx}
                     onCursor={setCursor}
+                    onRange={setRange}
                     onPick={(i) => openInsight({ kind: 'day', point: book.equity[i] })}
+                    endLabel={
+                      book.equity.length
+                        ? {
+                            value: book.equity[book.equity.length - 1].drawdown,
+                            text: `当前 ${pct(book.equity[book.equity.length - 1].drawdown)}`,
+                          }
+                        : undefined
+                    }
+                    markers={
+                      troughIdx != null &&
+                      troughIdx !== book.equity.length - 1 &&
+                      troughIdx / Math.max(book.equity.length - 1, 1) <= 0.72
+                        ? [
+                            {
+                              i: troughIdx,
+                              value: book.equity[troughIdx].drawdown,
+                              text: `谷底 ${pct(book.equity[troughIdx].drawdown)}`,
+                              tone: 'down',
+                            },
+                          ]
+                        : []
+                    }
+                    series={[{ values: book.equity.map((e) => e.drawdown), color: 'var(--gold)', width: 2 }]}
                   />
                   {hover ? (
                     <div className="chart-tip compact">
@@ -1582,16 +1834,41 @@ export function Dashboard(props: {
                   ) : null}
                 </div>
               ) : sleeveOk && ddSeries ? (
-                <div className="chart-wrap">
-                  <DollarDrawdown
-                    height={180}
+                <div className="chart-wrap tall">
+                  <MultiLine
+                    height={260}
+                    baseline={0}
+                    tickFormat={moneyK}
                     dates={book.equity.map((e) => e.date)}
-                    values={ddSeries}
                     cursor={cursor}
-                    trough={troughIdx}
-                    peak={ddPeakIdx}
+                    range={range}
                     onCursor={setCursor}
+                    onRange={setRange}
                     onPick={(i) => openInsight({ kind: 'day', point: book.equity[i] })}
+                    endLabel={
+                      ddSeries.length
+                        ? {
+                            value: ddSeries[ddSeries.length - 1] ?? 0,
+                            text: `当前 ${moneyK(ddSeries[ddSeries.length - 1] ?? 0)}`,
+                          }
+                        : undefined
+                    }
+                    markers={
+                      troughIdx != null &&
+                      ddSeries[troughIdx] != null &&
+                      troughIdx !== ddSeries.length - 1 &&
+                      troughIdx / Math.max(ddSeries.length - 1, 1) <= 0.72
+                        ? [
+                            {
+                              i: troughIdx,
+                              value: ddSeries[troughIdx],
+                              text: `谷底 ${moneyK(ddSeries[troughIdx])}`,
+                              tone: 'down',
+                            },
+                          ]
+                        : []
+                    }
+                    series={[{ values: ddSeries, color: 'var(--gold)', width: 2 }]}
                   />
                   {hover ? (
                     <div className="chart-tip compact">
@@ -1720,85 +1997,105 @@ export function Dashboard(props: {
               <b>{p.netExposureMean == null ? <VChip label="无法计算" tone="na" /> : pctPlain(p.netExposureMean, 0)}</b>
             </div>
           </article>
+          {accountOk && book.equity.length ? (
+            <article className="panel wide">
+              <h3>敞口</h3>
+              <p className="muted">毛敞口与净敞口来自当日持仓市值 / 账户净值。没有净值时不估算。</p>
+              <div className="chart-wrap">
+                <MultiLine
+                  height={200}
+                  baseline={0}
+                  tickFormat={(v) => pctPlain(v, 0)}
+                  dates={book.equity.map((e) => e.date)}
+                  cursor={cursor}
+                  onCursor={setCursor}
+                  endLabel={
+                    book.equity.length
+                      ? {
+                          value: book.equity[book.equity.length - 1].netExposure,
+                          text: `净 ${pctPlain(book.equity[book.equity.length - 1].netExposure, 0)}`,
+                        }
+                      : undefined
+                  }
+                  series={[
+                    { values: book.equity.map((e) => e.grossExposure), color: 'var(--t3)', width: 1.2, dash: '5 4' },
+                    { values: book.equity.map((e) => e.netExposure), color: 'var(--gold)', width: 2 },
+                  ]}
+                />
+              </div>
+              <p className="tiny">虚线毛敞口 · 金线净敞口</p>
+            </article>
+          ) : sleeveOk && book.equity.length > 3 ? (
+            <article className="panel wide">
+              <h3>日变动分布</h3>
+              <p className="muted">正股子账本相邻交易日盯市差额。这不是账户波动率。</p>
+              <Histogram values={dailyDeltas(book.equity)} format={moneyK} />
+            </article>
+          ) : null}
         </div>
       ) : null}
 
       {tab === 'behavior' ? (
-        <div className="grid-2">
-          <article className="panel wide">
-            <p className="muted">
-              行为观察按持仓片段。点击一行打开该分组。n&lt;10 不写成规律，n&lt;5 收进低样本分组。
-            </p>
-            <details className="fold-block" open>
-              <summary>行为摘要</summary>
-              <p className="tiny">
-                高影响低样本：开盘 30min，n=3，均值 −$2,875；探索性结果：尾盘，n=23，均值 +$281；覆盖不足：星期分组有效 {book.checkup.weekdays.reduce((s, r) => s + r.n, 0)}/{book.checkup.weekdays[0]?.total ?? 0}；未发现可复现规律。
-              </p>
-            </details>
-            <details className="fold-block">
-              <summary>开盘 / 盘中 / 尾盘</summary>
-              <GroupTable
-                rows={book.checkup.sessions}
-                onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-              />
-            </details>
-            <details className="fold-block">
-              <summary>持仓时间</summary>
-              <GroupTable
-                rows={book.checkup.holdBuckets}
-                onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-              />
-            </details>
-            <details className="fold-block">
-              <summary>多头 / 空头</summary>
-              <GroupTable
-                rows={book.checkup.sides}
-                onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-              />
-            </details>
-            <details className="fold-block">
-              <summary>星期</summary>
-              <GroupTable
-                rows={book.checkup.weekdays}
-                onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-              />
-            </details>
-            <details className="fold-block">
-              <summary>盈亏持仓时长比</summary>
+        <div>
+          <p className="muted" style={{ marginBottom: 12 }}>
+            行为观察按持仓片段。点一条打开该组。n&lt;10 不写成规律；无样本不画成 0。
+          </p>
+          <div className="grid-2">
+            <GroupViz
+              title="开盘 / 盘中 / 尾盘"
+              rows={book.checkup.sessions}
+              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+            />
+            <GroupViz
+              title="持仓时间"
+              rows={book.checkup.holdBuckets}
+              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+            />
+            <GroupViz
+              title="多头 / 空头"
+              rows={book.checkup.sides}
+              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+            />
+            <GroupViz
+              title="星期"
+              rows={book.checkup.weekdays}
+              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+            />
+            <article className="panel">
+              <h3>处置效应与加仓</h3>
               <p className="tiny">{book.checkup.disposition.fact}</p>
-              <div className="kv-grid">
-                <span>盈亏持仓时长比</span>
-                <b>{book.checkup.disposition.ratio != null ? book.checkup.disposition.ratio.toFixed(2) : 'N/A'}</b>
-                <span>亏损持仓长于盈利中位</span>
-                <b className={book.checkup.disposition.n >= 10 ? clsPnl(book.checkup.disposition.amount) : ''}>
-                  {money(book.checkup.disposition.amount)}
-                </b>
-              </div>
-            </details>
-            <details className="fold-block">
-              <summary>亏损后再开仓</summary>
+              <SignedBars
+                items={[
+                  {
+                    id: 'disp',
+                    label: '盈亏持仓比',
+                    value: book.checkup.disposition.ratio,
+                    n: book.checkup.disposition.n,
+                  },
+                ]}
+                format={(v) => `${v.toFixed(2)}×`}
+              />
               <p className="tiny">{book.checkup.tilt.fact}</p>
-              <div className="kv-grid">
-                <span>亏损后再开仓</span>
-                <b>
-                  {book.checkup.tilt.nTilt}/{book.checkup.tilt.nAfterLoss}
-                </b>
-                <span>仓位倍数</span>
-                <b>{book.checkup.tilt.sizeMultiple != null ? `${book.checkup.tilt.sizeMultiple.toFixed(2)}×` : 'N/A'}</b>
-                <span>这些单盈亏</span>
-                <b className={book.checkup.tilt.nTilt >= 10 ? clsPnl(book.checkup.tilt.amount) : ''}>
-                  {money(book.checkup.tilt.amount)}
-                </b>
-              </div>
-            </details>
-            <details className="fold-block">
-              <summary>追高覆盖</summary>
+              {book.checkup.tilt.nAfterLoss > 0 ? (
+                <CoverageMeter
+                  label="亏后再开仓"
+                  value={book.checkup.tilt.nTilt}
+                  of={book.checkup.tilt.nAfterLoss}
+                  note={book.checkup.tilt.sizeMultiple != null ? `${book.checkup.tilt.sizeMultiple.toFixed(2)}×` : undefined}
+                />
+              ) : (
+                <p className="tiny">没有「亏损后再开仓」样本。</p>
+              )}
+            </article>
+            <article className="panel">
+              <h3>追高覆盖</h3>
               <p className="tiny">{book.checkup.chase.fact}</p>
+              {book.checkup.chase.total > 0 ? (
+                <CoverageMeter label="20 日窗口" value={book.checkup.chase.covered} of={book.checkup.chase.total} />
+              ) : (
+                <p className="tiny">没有可评估的开仓。</p>
+              )}
               <div className="kv-grid">
-                <span>有 20 日窗口</span>
-                <b>
-                  {book.checkup.chase.covered}/{book.checkup.chase.total}
-                </b>
                 <span>分位均值</span>
                 <b>{book.checkup.chase.mean != null ? book.checkup.chase.mean.toFixed(0) : 'N/A'}</b>
                 <span>分位≥80 盈亏</span>
@@ -1806,8 +2103,8 @@ export function Dashboard(props: {
                   {money(book.checkup.chase.highPnl)}
                 </b>
               </div>
-            </details>
-          </article>
+            </article>
+          </div>
         </div>
       ) : null}
 
@@ -1839,6 +2136,8 @@ export function Dashboard(props: {
               <span>Bootstrap seed</span>
               <b>{p.bootstrapSeed}</b>
             </div>
+            <CoverageMeter label="MAE/MFE" value={book.credibility.maeMfeComputableShare} />
+            <CoverageMeter label="追高窗口" value={book.credibility.chaseCoverage} />
           </article>
           <article className="panel">
             <h3>为什么有些结论不可信</h3>
@@ -1863,6 +2162,41 @@ export function Dashboard(props: {
           <article className="panel wide">
             <h3>敏感性</h3>
             <p className="muted">{book.sensitivity.note}</p>
+            <div className="grid-2">
+              <div>
+                <p className="tiny">盈利集中度（占毛利）</p>
+                {book.sensitivity.top1Share == null ? (
+                  <p className="tiny">没有毛利样本，不把集中度画成 0。</p>
+                ) : (
+                  <>
+                    <CoverageMeter label="最大一笔" value={book.sensitivity.top1Share} />
+                    {book.sensitivity.top3Share != null ? <CoverageMeter label="前 3 笔" value={book.sensitivity.top3Share} /> : null}
+                    {book.sensitivity.top5Share != null ? <CoverageMeter label="前 5 笔" value={book.sensitivity.top5Share} /> : null}
+                  </>
+                )}
+              </div>
+              <div>
+                <p className="tiny">前半 / 后半历史单笔均值</p>
+                <SignedBars
+                  items={[
+                    { id: 'h1', label: '前半', value: book.sensitivity.firstHalfExpectancy },
+                    { id: 'h2', label: '后半', value: book.sensitivity.secondHalfExpectancy },
+                  ]}
+                  format={money}
+                />
+              </div>
+            </div>
+            {book.sensitivity.cost.some((c) => c.expectancy != null) ? (
+              <>
+                <p className="tiny" style={{ marginTop: 12 }}>额外成本压力：历史单笔均值随 bps 变化。缺失点不连成 0。</p>
+                <MonthBars
+                  items={book.sensitivity.cost
+                    .filter((c) => c.expectancy != null)
+                    .map((c) => ({ label: `${c.bps}bp`, value: c.expectancy as number }))}
+                  format={money}
+                />
+              </>
+            ) : null}
             <div className="kv-grid">
               <span>去掉最大盈利单后的历史单笔均值</span>
               <b>{book.sensitivity.expectancyDropMaxWin == null ? '—' : money(book.sensitivity.expectancyDropMaxWin)}</b>
