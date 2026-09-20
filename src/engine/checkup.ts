@@ -1,5 +1,6 @@
 import { etDateKey, etParts } from '../lib/time.ts'
 import { mean, median, wilsonInterval } from '../lib/stats.ts'
+import { REGIME_LABELS, REGIME_ORDER, holdDiagnostic, regimeMix } from './regime.ts'
 import type { Checkup, Credibility, GroupRow, GroupStatus, RoundTrip, SampleBanner, SessionBucket } from '../types.ts'
 
 const SESSION_LABELS: Record<SessionBucket, string> = {
@@ -104,8 +105,16 @@ export function buildCheckup(trips: RoundTrip[]): Checkup {
   const tiltSizeMultiple = tiltSizes.length && normalSizes.length && normalSize ? tiltSize / normalSize : null
   const tiltAmount = tiltTrades.reduce((s, t) => s + t.realizedPnl, 0)
 
+  // 入场时机(时段)只对日内+波段有意义:持仓/长线的分钟级入场点几乎不影响结果。
+  // 所以 session 面板只统计这批 cohort,样本量也按 cohort 算,不被长线那批稀释。
+  const sessionCohort = closed.filter((t) => t.regime === 'intraday' || t.regime === 'swing')
   const sessions = (['open30', 'midday', 'close'] as SessionBucket[]).map((bucket) =>
-    group(bucket, SESSION_LABELS[bucket], closed.filter((t) => t.session === bucket), closed.length),
+    group(bucket, SESSION_LABELS[bucket], sessionCohort.filter((t) => t.session === bucket), sessionCohort.length),
+  )
+  // 显隐由 cohort 是否够大决定(不是账本单一 regime)。UI 仍留「展开全部」逃生口,判错只花一次点击。
+  const sessionRelevant = sessionCohort.length >= 10
+  const regimes = REGIME_ORDER.map((rg) =>
+    group(rg, REGIME_LABELS[rg], closed.filter((t) => t.regime === rg), closed.length),
   )
   const sides = [
     group('long', '多头', closed.filter((t) => t.side === 'long'), closed.length),
@@ -136,6 +145,11 @@ export function buildCheckup(trips: RoundTrip[]): Checkup {
 
   return {
     sessions,
+    sessionRelevant,
+    sessionCohortN: sessionCohort.length,
+    regimeMix: regimeMix(closed),
+    holdDiagnostic: holdDiagnostic(closed),
+    regimes,
     sides,
     weekdays: weekdaysEt,
     holdBuckets,

@@ -64,6 +64,8 @@ function emptyTrip(fill: Fill, side: Direction, id: string): RoundTrip {
     splitWarning: false,
     atr: null,
     positionPct: null,
+    regime: 'intraday', // 占位;replay 后由 enrichRegime 依最终 sameDay/holdMinutes 覆盖
+    annualizedReturn: null,
   }
 }
 

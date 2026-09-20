@@ -30,6 +30,46 @@ export function stdev(xs: number[], ddof = 1): number {
   return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / (xs.length - ddof))
 }
 
+function centralMoment(xs: number[], k: number, m: number): number {
+  return xs.reduce((s, x) => s + (x - m) ** k, 0) / xs.length
+}
+
+/** 样本偏度 g1 = m3 / m2^1.5。分布对称时约为 0;负偏=左尾更长(多次小赢+偶发大亏)。方差为 0 或样本<3 返回 null。 */
+export function skewness(xs: number[]): number | null {
+  if (xs.length < 3) return null
+  const m = mean(xs)
+  const m2 = centralMoment(xs, 2, m)
+  if (m2 < 1e-18) return null
+  return centralMoment(xs, 3, m) / m2 ** 1.5
+}
+
+/** 超额峰度 g2 = m4 / m2^2 − 3。>0 表示比正态更肥尾。方差为 0 或样本<4 返回 null。 */
+export function kurtosis(xs: number[]): number | null {
+  if (xs.length < 4) return null
+  const m = mean(xs)
+  const m2 = centralMoment(xs, 2, m)
+  if (m2 < 1e-18) return null
+  return centralMoment(xs, 4, m) / (m2 * m2) - 3
+}
+
+/** erf(x),Abramowitz-Stegun 7.1.26,最大绝对误差约 1.5e-7。 */
+function erf(x: number): number {
+  const s = x < 0 ? -1 : 1
+  const ax = Math.abs(x)
+  const t = 1 / (1 + 0.3275911 * ax)
+  const y =
+    1 -
+    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
+      t *
+      Math.exp(-ax * ax)
+  return s * y
+}
+
+/** 标准正态 CDF Φ(z) = ½(1 + erf(z/√2))。用于游程检验的 p 值。 */
+export function normalCdf(z: number): number {
+  return Math.min(1, Math.max(0, 0.5 * (1 + erf(z / Math.SQRT2))))
+}
+
 export function mulberry32(seed: number) {
   let a = seed >>> 0
   return () => {

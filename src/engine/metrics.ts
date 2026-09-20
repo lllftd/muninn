@@ -13,6 +13,7 @@ import {
   wilsonInterval,
   xirr,
 } from '../lib/stats.ts'
+import { distributionShape } from './analytics.ts'
 import { METRIC_VERSION } from '../types.ts'
 import type {
   AlphaDiag,
@@ -370,6 +371,11 @@ export function summarize(args: {
   let relativeCash: number | null = null
   let grossExposureMean: number | null = null
   let netExposureMean: number | null = null
+  let benchCapture: Performance['benchCapture'] = null
+  let infoRatio: number | null = null
+  let battingAvg: number | null = null
+  let ulcerPerf: number | null = null
+  let omega: number | null = null
 
   if (canAccount && equity.length > 1) {
     const rets = dailyRetsFromIndex(equity.map((e) => e.index))
@@ -456,6 +462,40 @@ export function summarize(args: {
           : null
     grossExposureMean = mean(equity.map((e) => e.grossExposure))
     netExposureMean = mean(equity.map((e) => e.netExposure))
+
+    // 基准上/下行捕获:账户日收益在基准涨日、跌日分别复利,除以基准同期复利。
+    // <1 表示涨得比基准少 / 跌得比基准少(抗跌)。方向日不足 10 天不给值,不硬凑。
+    const upIdx: number[] = []
+    const downIdx: number[] = []
+    for (let i = 1; i < bRets.length; i++) {
+      if (bRets[i] > 0) upIdx.push(i)
+      else if (bRets[i] < 0) downIdx.push(i)
+    }
+    const compound = (idx: number[], series: number[]) => idx.reduce((p, i) => p * (1 + series[i]), 1) - 1
+    const upA = compound(upIdx, rets)
+    const upB = compound(upIdx, bRets)
+    const dnA = compound(downIdx, rets)
+    const dnB = compound(downIdx, bRets)
+    benchCapture = {
+      upside: upIdx.length >= 10 && Math.abs(upB) > 1e-9 ? upA / upB : null,
+      downside: downIdx.length >= 10 && Math.abs(dnB) > 1e-9 ? dnA / dnB : null,
+      upDays: upIdx.length,
+      downDays: downIdx.length,
+      basis: '账户日收益在基准上涨日、下跌日分别复利,除以基准同期复利。上行捕获<1=跟涨少,下行捕获<1=抗跌好。方向日需各≥10 天。',
+    }
+
+    // 信息比率 / 跑赢率 / Martin / Omega —— 都用已算好的日收益序列,不额外拉数据。
+    const active = rets.map((r, i) => r - bRets[i])
+    const activeSd = stdev(active)
+    infoRatio = activeSd ? (mean(active) / activeSd) * Math.sqrt(252) : null
+    let beat = 0
+    for (let i = 1; i < rets.length; i++) if (rets[i] > bRets[i]) beat += 1
+    battingAvg = rets.length > 1 ? beat / (rets.length - 1) : null
+    const rfAnn = mean(rfRets) * 252
+    ulcerPerf = ulcer && ulcer > 0 && twrAnnualized != null ? (twrAnnualized - rfAnn) / ulcer : null
+    const upArea = rpEx.reduce((s, x) => s + Math.max(x, 0), 0)
+    const dnArea = rpEx.reduce((s, x) => s + Math.max(-x, 0), 0)
+    omega = dnArea > 1e-12 ? upArea / dnArea : null
   } else if (sleeve && equity.length > 1) {
     // 没有账户净值时，只用累计盯市盈亏的金额回落，不计算百分比回撤率。
     let peakIdx = 0
@@ -575,6 +615,8 @@ export function summarize(args: {
         : '未确认是否完整，缺失不等于零，XIRR 为 N/A',
     },
   ]
+
+  const tradeShape = distributionShape(closed.map((t) => t.realizedPnl))
 
   const openTimes = trips.map((t) => t.openTime.getTime()).filter((n) => Number.isFinite(n))
   const endTimes = trips
@@ -700,6 +742,12 @@ export function summarize(args: {
     ulcer,
     grossExposureMean,
     netExposureMean,
+    benchCapture,
+    infoRatio,
+    battingAvg,
+    ulcerPerf,
+    omega,
+    tradeShape,
     bootstrapSeed: BOOTSTRAP_SEED,
     sampleStart,
     sampleEnd,

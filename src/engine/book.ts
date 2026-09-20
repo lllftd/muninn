@@ -4,6 +4,9 @@ import { importFutu, parseCashflows } from './futu.ts'
 import { attachPositionPct, buildEquity, summarize } from './metrics.ts'
 import { replayAll } from './path.ts'
 import { autoTags, buildCheckup, buildCredibility } from './checkup.ts'
+import { enrichRegime } from './regime.ts'
+import { monteCarlo, regimeCumulative, runsTest } from './analytics.ts'
+import { etDateKey } from '../lib/time.ts'
 import { buildSensitivity } from './sensitivity.ts'
 import { METRIC_VERSION } from '../types.ts'
 import type { Bar, Book, Cashflow, QuotePack, Warning } from '../types.ts'
@@ -72,11 +75,12 @@ export function assembleBook(args: {
   const fifo = buildRoundTrips(imported.fills)
   let trips = attachSequence(fifo.trips)
   const fifoReplay = replayAll(trips, args.quotes.bars, args.quotes.splits, vix)
-  trips = tagTrips(attachPositionPct(fifoReplay.trips, []), args.extraTags)
+  // replay 之后 sameDay/holdMinutes 才最终确定,此处再 enrich 每笔的 regime 与时间归一收益。
+  trips = enrichRegime(tagTrips(attachPositionPct(fifoReplay.trips, []), args.extraTags))
 
   let episodes = attachSequence(buildEpisodes(imported.fills))
   const epReplay = replayAll(episodes, args.quotes.bars, args.quotes.splits, vix)
-  episodes = tagTrips(epReplay.trips, args.extraTags)
+  episodes = enrichRegime(tagTrips(epReplay.trips, args.extraTags))
 
   const missing = [...new Set([...fifoReplay.missing, ...epReplay.missing])]
   const warnings = compactWarnings([...imported.warnings, ...fifo.warnings], missing)
@@ -127,6 +131,24 @@ export function assembleBook(args: {
   })
   const checkup = buildCheckup(review)
   const sensitivity = buildSensitivity(trips, episodes)
+
+  // 蒙特卡洛 / 游程 / regime 累计,均用复盘口径(review = episodes 去 DRIP)。
+  const reviewClosed = review.filter((t) => t.status === 'closed' && t.closeTime)
+  const byOpenDay = new Map<string, number[]>()
+  for (const t of reviewClosed) {
+    const k = etDateKey(t.openTime)
+    const arr = byOpenDay.get(k) || []
+    arr.push(t.realizedPnl)
+    byOpenDay.set(k, arr)
+  }
+  const closeOrdered = [...reviewClosed].sort(
+    (a, b) => (a.closeTime as Date).getTime() - (b.closeTime as Date).getTime(),
+  )
+  const analytics = {
+    monteCarlo: monteCarlo([...byOpenDay.values()], closeOrdered.map((t) => t.realizedPnl)),
+    runs: runsTest(closeOrdered.map((t) => t.realizedPnl > 0)),
+    regimeCum: regimeCumulative(review),
+  }
   const credibility = buildCredibility({
     trips: review,
     dayCount: equity.length,
@@ -154,6 +176,7 @@ export function assembleBook(args: {
     checkup,
     credibility,
     sensitivity,
+    analytics,
     bars: args.quotes.bars,
     cashflows,
   }

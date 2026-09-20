@@ -55,6 +55,8 @@ function emptyEpisode(fill: Fill, side: Direction, id: string): RoundTrip {
     splitWarning: false,
     atr: null,
     positionPct: null,
+    regime: 'intraday', // 占位;replay 后由 enrichRegime 覆盖
+    annualizedReturn: null,
   }
 }
 
