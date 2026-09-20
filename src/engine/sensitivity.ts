@@ -37,6 +37,9 @@ export function buildSensitivity(fifo: RoundTrip[], episodes: RoundTrip[]): Sens
   const sorted = [...pnls].sort((a, b) => b - a)
   const profit = sorted.filter((x) => x > 0)
   const profitSum = profit.reduce((s, x) => s + x, 0)
+  const loss = sorted.filter((x) => x < 0)
+  const lossSum = Math.abs(loss.reduce((s, x) => s + x, 0))
+  const absSum = pnls.reduce((s, x) => s + Math.abs(x), 0)
   const share = (n: number) => (profitSum > 0 ? profit.slice(0, n).reduce((s, x) => s + x, 0) / profitSum : null)
   const mid = Math.floor(closed.length / 2)
   const byTime = [...closed].sort((a, b) => a.openTime.getTime() - b.openTime.getTime())
@@ -55,6 +58,10 @@ export function buildSensitivity(fifo: RoundTrip[], episodes: RoundTrip[]): Sens
       pf: pfOf(priced),
     }
   })
+  const maxWin = profit.length ? profit[0] : null
+  const maxLoss = loss.length ? loss[loss.length - 1] : null
+  const maxAbs = pnls.length ? Math.max(...pnls.map((x) => Math.abs(x))) : null
+  const dropMaxWin = maxWin != null ? pnls.filter((x) => x !== maxWin || profit.filter((y) => y === maxWin).length > 1) : pnls
   return {
     n: closed.length,
     openDays: days.size,
@@ -63,6 +70,10 @@ export function buildSensitivity(fifo: RoundTrip[], episodes: RoundTrip[]): Sens
     expectancyDropMaxDay: dropDayPnls.length ? mean(dropDayPnls) : null,
     maxTradePnlShare: total !== 0 && maxTrade ? maxTrade / Math.abs(total) : null,
     maxDayPnlShare: maxDayShare,
+    maxWinShareGrossProfit: maxWin != null && profitSum > 0 ? maxWin / profitSum : null,
+    maxLossShareGrossLoss: maxLoss != null && lossSum > 0 ? Math.abs(maxLoss) / lossSum : null,
+    maxAbsShareTotalAbs: maxAbs != null && absSum > 0 ? maxAbs / absSum : null,
+    expectancyDropMaxWin: dropMaxWin.length ? mean(dropMaxWin) : null,
     top1Share: share(1),
     top3Share: share(3),
     top5Share: share(5),

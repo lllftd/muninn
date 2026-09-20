@@ -257,6 +257,8 @@ export type Performance = {
   ddTrough: string | null
   ddRecover: string | null
   underwaterDays: number
+  underwaterDaysKind: 'calendar' | 'observed'
+  underwaterEnd: string | null
   currentlyUnderwater: boolean
   ulcer: number | null
   grossExposureMean: number | null
@@ -284,6 +286,8 @@ export type GroupRow = {
   pnl: number
   status: GroupStatus
   fact: string
+  covered?: number
+  total?: number
 }
 
 export type Checkup = {
@@ -354,6 +358,10 @@ export type Sensitivity = {
   expectancyDropMaxDay: number | null
   maxTradePnlShare: number | null
   maxDayPnlShare: number | null
+  maxWinShareGrossProfit: number | null
+  maxLossShareGrossLoss: number | null
+  maxAbsShareTotalAbs: number | null
+  expectancyDropMaxWin: number | null
   top1Share: number | null
   top3Share: number | null
   top5Share: number | null

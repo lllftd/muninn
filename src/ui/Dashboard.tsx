@@ -6,7 +6,7 @@ import { PathDrawer } from './PathDrawer.tsx'
 import { TABS, tabFromView, viewOf, type Tab } from './views.ts'
 import { ciText, clsPnl, finiteNum, holdLabel, money, moneyAbs, moneyK, pct, pctPlain, signed } from '../lib/format.ts'
 import { etDateKey, etParts } from '../lib/time.ts'
-import type { Book, CoverageRow, EquityPoint, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
+import type { Bar, Book, CoverageRow, EquityPoint, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
 
 type SortKey = 'time' | 'pnl' | 'r' | 'hold'
 type SideFilter = 'all' | 'long' | 'short'
@@ -140,6 +140,11 @@ function GroupTable(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }
     >
       <td>
         {s.label}
+        {s.total != null && s.covered != null ? (
+          <div className="tiny muted">
+            有效 {s.covered}/{s.total}｜缺失 {s.total - s.covered}
+          </div>
+        ) : null}
         <div className="tiny">{s.fact}</div>
       </td>
       <td>{s.n}</td>
@@ -216,9 +221,9 @@ type TradeBenchRow = {
   excess: number | null
 }
 
-function tradeBenchComparison(episodes: RoundTrip[], equity: EquityPoint[]) {
+function tradeBenchComparison(episodes: RoundTrip[], benchBars: Bar[]) {
   const benchMap = new Map<string, number>()
-  for (const e of equity) if (e.benchIndex > 0) benchMap.set(e.date, e.benchIndex)
+  for (const b of benchBars) if (b.close > 0) benchMap.set(b.date, b.close)
   const rows: TradeBenchRow[] = []
   for (const t of episodes) {
     if (t.status !== 'closed' || t.tags.includes('DRIP')) continue
@@ -292,50 +297,60 @@ function TradeBenchPanel(props: {
   onOpenTrip: (trip: RoundTrip) => void
 }) {
   const sorted = [...props.rows].sort((a, b) => (b.excess ?? -Infinity) - (a.excess ?? -Infinity))
+  const allMissing = props.rows.length > 0 && props.rows.every((r) => r.spxRet == null)
   return (
     <article className="panel wide">
       <h3>交易级基准比较</h3>
       <p className="muted">
         每笔闭环交易的持有期收益率 − SPY 同期收益率。这是交易级持有期比较，不是账户收益率，也不代表账户财富跑赢或跑输 SPY。
       </p>
-      <div className="kv-grid">
-        <span>跑赢 SPY</span>
-        <b>
-          {props.beat} / {props.n} 笔
-        </b>
-        <span>中位超额收益</span>
-        <b>{props.medianExcess == null ? '—' : <span className={clsPnl(props.medianExcess)}>{pct(props.medianExcess)}</span>}</b>
-        <span>平均超额收益</span>
-        <b>{props.meanExcess == null ? '—' : <span className={clsPnl(props.meanExcess)}>{pct(props.meanExcess)}</span>}</b>
-      </div>
-      {sorted.length ? (
-        <table className="grid trips">
-          <thead>
-            <tr>
-              <th>代码</th>
-              <th>方向</th>
-              <th>股票持有期</th>
-              <th>SPY 同期</th>
-              <th>超额</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.slice(0, 15).map((r) => (
-              <tr key={r.trip.id} onClick={() => props.onOpenTrip(r.trip)} role="button" tabIndex={0}>
-                <td>
-                  <b>{r.trip.symbol}</b>
-                  <div className="muted">{r.trip.name}</div>
-                </td>
-                <td>{r.trip.side === 'long' ? '多' : '空'}</td>
-                <td className={clsPnl(r.stockRet)}>{pct(r.stockRet)}</td>
-                <td>{r.spxRet == null ? '—' : <span className={clsPnl(r.spxRet)}>{pct(r.spxRet)}</span>}</td>
-                <td>{r.excess == null ? '—' : <span className={clsPnl(r.excess)}>{pct(r.excess)}</span>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {allMissing ? (
+        <div className="banner cannot-prove">
+          <strong>SPY 同期价格不可用，暂停计算超额收益。</strong>
+          <div>请检查行情源或稍后重试。</div>
+        </div>
       ) : (
-        <p className="tiny">没有可对拍的闭环交易（缺少基准行情或平仓价格）。</p>
+        <>
+          <div className="kv-grid">
+            <span>跑赢 SPY</span>
+            <b>
+              {props.beat} / {props.n} 笔
+            </b>
+            <span>中位超额收益</span>
+            <b>{props.medianExcess == null ? '—' : <span className={clsPnl(props.medianExcess)}>{pct(props.medianExcess)}</span>}</b>
+            <span>平均超额收益</span>
+            <b>{props.meanExcess == null ? '—' : <span className={clsPnl(props.meanExcess)}>{pct(props.meanExcess)}</span>}</b>
+          </div>
+          {sorted.length ? (
+            <table className="grid trips">
+              <thead>
+                <tr>
+                  <th>代码</th>
+                  <th>方向</th>
+                  <th>股票持有期</th>
+                  <th>SPY 同期</th>
+                  <th>超额</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.slice(0, 15).map((r) => (
+                  <tr key={r.trip.id} onClick={() => props.onOpenTrip(r.trip)} role="button" tabIndex={0}>
+                    <td>
+                      <b>{r.trip.symbol}</b>
+                      <div className="muted">{r.trip.name}</div>
+                    </td>
+                    <td>{r.trip.side === 'long' ? '多' : '空'}</td>
+                    <td className={clsPnl(r.stockRet)}>{pct(r.stockRet)}</td>
+                    <td>{r.spxRet == null ? 'SPY 同期不可用' : <span className={clsPnl(r.spxRet)}>{pct(r.spxRet)}</span>}</td>
+                    <td>{r.excess == null ? '—' : <span className={clsPnl(r.excess)}>{pct(r.excess)}</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="tiny">没有可对拍的闭环交易（缺少基准行情或平仓价格）。</p>
+          )}
+        </>
       )}
     </article>
   )
@@ -459,7 +474,7 @@ function EdgePanel(props: {
   const be = 1 / (1 + payoff)
   const hasEdge = wr >= be
   const gapPp = (wr - be) * 100
-  const pfText = pf != null && Number.isFinite(pf) ? pf.toFixed(2) : '—'
+  const pfText = pf != null && Number.isFinite(pf) ? (pf > 20 ? '> 20（极不稳定）' : pf.toFixed(2)) : '—'
   const expText = exp != null ? money(exp) : '—'
   const max = Math.max(0.3, be * 1.6, wr * 1.6)
   const pctOf = (v: number) => `${(v / max) * 100}%`
@@ -687,7 +702,7 @@ export function Dashboard(props: {
     const i = book.equity.findIndex((e) => e.date === p.ddStart)
     return i >= 0 ? i : null
   }, [book.equity, p.ddStart])
-  const tradeBench = useMemo(() => tradeBenchComparison(book.episodes, book.equity), [book.episodes, book.equity])
+  const tradeBench = useMemo(() => tradeBenchComparison(book.episodes, book.bars.SPY || book.bars['^GSPC'] || []), [book.episodes, book.bars])
   const benchMissing = useMemo(() => {
     const m: string[] = []
     if (p.initialCapital == null) m.push('capital')
@@ -822,7 +837,11 @@ export function Dashboard(props: {
             <Stat
               k={<span className="hint">{accountOk ? 'TWR' : '累计盯市盈亏'}</span>}
               v={accountOk ? signedPct(p.twr) : signedMoney(p.netPnl)}
-              sub={accountOk ? '整本账 · 已剥离出入金' : '正股成交还原 · 费用按已匹配部分计入'}
+              sub={
+                accountOk
+                  ? '整本账 · 已剥离出入金'
+                  : '含未实现持仓与费用，子账本口径'
+              }
               tip={
                 accountOk
                   ? '这是账户自己涨了多少，中途存进去、取出来的钱已经拿掉了。它不是你口袋里实际拿到的回报。'
@@ -836,9 +855,7 @@ export function Dashboard(props: {
               sub={
                 filtered
                   ? '按所选交易重算'
-                  : expectancy.ci
-                    ? `95% CI：${ciText(expectancy.ci, 'money', 0).replace('–', ' 至 ')}`
-                    : '—'
+                  : `n=${expectancy.n}，仅已闭环持仓片段，不含未实现持仓`
               }
               tip="平均每笔交易赚或亏多少钱。置信区间若跨过 0，说明现在还不能称为稳定的正向或负向期望。"
               onClick={() => openInsight({ kind: 'expectancy' })}
@@ -856,7 +873,7 @@ export function Dashboard(props: {
             />
             <Stat
               k={<span className="hint">Profit Factor</span>}
-              v={profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? profitFactor.value.toFixed(2) : '+∞') : 'N/A'}
+              v={profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? (profitFactor.value > 20 ? '> 20（极不稳定）' : profitFactor.value.toFixed(2)) : '+∞') : 'N/A'}
               sub={
                 filtered
                   ? '按所选交易重算'
@@ -889,7 +906,7 @@ export function Dashboard(props: {
           </span>
           <span className="kpi-sep">｜</span>
           <span className="kpi-item">
-            <b>{profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? profitFactor.value.toFixed(2) : '+∞') : '—'}</b> PF
+            <b>{profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? (profitFactor.value > 20 ? '> 20' : profitFactor.value.toFixed(2)) : '+∞') : '—'}</b> PF
           </span>
           <span className="kpi-sep">｜</span>
           <span className={accountOk ? 'kpi-item ok' : 'kpi-item warn'}>
@@ -1453,52 +1470,54 @@ export function Dashboard(props: {
                   </div>
                 </>
               ) : (
-                <>
-                  <p className="tiny">缺少期初净资产和完整现金流，账户终值与相对基准暂不可计算。</p>
-                  <button type="button" className="ghost sm" onClick={openAccountSupplement}>
-                    补充账户数据
+                <div className="status-strip compact">
+                  <b>账户级基准指标暂不可用</b>
+                  <span>TWR · XIRR · Alpha · Beta · 财富曲线</span>
+                  <span>缺少期初净资产及完整现金流</span>
+                  <button type="button" className="btn-primary sm" onClick={openAccountSupplement}>
+                    补充数据
                   </button>
-                </>
+                </div>
               )}
             </article>
-            <article className="panel">
-              <h3>超额收益诊断（Alpha）</h3>
-              {!accountOk ? (
-                <p className="tiny">补充账户数据后，将估计无法由市场涨跌解释的年化收益，并同时展示 Beta 与拟合可信度。</p>
-              ) : !p.alpha || !p.alpha.valid ? (
-                <p className="tiny">{p.alpha?.invalidReason || '暂不可用：回归序列未通过一致性校验。'}</p>
-              ) : (
-                <>
-                  <p className="muted">需要账户日收益序列与同期基准；结果是回归估计，不等同于实际累计超额收益。</p>
-                  <div className="kv-grid">
-                    <span>对齐后的日收益 n</span>
-                    <b>
-                      {p.alpha.n} · {p.alpha.start} → {p.alpha.end}
-                    </b>
-                    <span>年化 α 点估计</span>
-                    <b>{p.closedCount >= 30 ? pct(p.alpha.annualized) : `${pct(p.alpha.annualized)}（仅点估计）`}</b>
-                    <span>标准误 / 95% 区间</span>
-                    <b>
-                      {pct(p.alpha.se)} · {pct(p.alpha.ciLo)} – {pct(p.alpha.ciHi)}
-                    </b>
-                    <span>β / 标准误</span>
-                    <b>
-                      {p.alpha.beta.toFixed(2)} / {p.alpha.betaSe.toFixed(2)}
-                    </b>
-                    <span>R²</span>
-                    <b>{p.alpha.r2.toFixed(2)}</b>
-                    <span>无风险利率</span>
-                    <b>{p.alpha.rfSource}</b>
-                    <span>频率 / 年化 / 标准误</span>
-                    <b>
-                      {p.alpha.freq} · ×252 · {p.alpha.seMethod}
-                    </b>
-                    <span>口径</span>
-                    <b className="tiny">{p.alpha.basis}</b>
-                  </div>
-                </>
-              )}
-            </article>
+            {accountOk ? (
+              <article className="panel">
+                <h3>超额收益诊断（Alpha）</h3>
+                {!p.alpha || !p.alpha.valid ? (
+                  <p className="tiny">{p.alpha?.invalidReason || '暂不可用：回归序列未通过一致性校验。'}</p>
+                ) : (
+                  <>
+                    <p className="muted">需要账户日收益序列与同期基准；结果是回归估计，不等同于实际累计超额收益。</p>
+                    <div className="kv-grid">
+                      <span>对齐后的日收益 n</span>
+                      <b>
+                        {p.alpha.n} · {p.alpha.start} → {p.alpha.end}
+                      </b>
+                      <span>年化 α 点估计</span>
+                      <b>{p.closedCount >= 30 ? pct(p.alpha.annualized) : `${pct(p.alpha.annualized)}（仅点估计）`}</b>
+                      <span>标准误 / 95% 区间</span>
+                      <b>
+                        {pct(p.alpha.se)} · {pct(p.alpha.ciLo)} – {pct(p.alpha.ciHi)}
+                      </b>
+                      <span>β / 标准误</span>
+                      <b>
+                        {p.alpha.beta.toFixed(2)} / {p.alpha.betaSe.toFixed(2)}
+                      </b>
+                      <span>R²</span>
+                      <b>{p.alpha.r2.toFixed(2)}</b>
+                      <span>无风险利率</span>
+                      <b>{p.alpha.rfSource}</b>
+                      <span>频率 / 年化 / 标准误</span>
+                      <b>
+                        {p.alpha.freq} · ×252 · {p.alpha.seMethod}
+                      </b>
+                      <span>口径</span>
+                      <b className="tiny">{p.alpha.basis}</b>
+                    </div>
+                  </>
+                )}
+              </article>
+            ) : null}
           </div>
           {!accountOk ? (
             <TradeBenchPanel
@@ -1619,7 +1638,14 @@ export function Dashboard(props: {
                   ) : (
                     <div>
                       <dt>水下天数</dt>
-                      <dd>{p.underwaterDays} 个日历日</dd>
+                      <dd>
+                        {p.underwaterDays} 个日历日
+                        {p.underwaterEnd ? (
+                          <span className="muted">
+                            （{p.ddRecover ? '至恢复' : '至当前分析截止'} {p.underwaterEnd}）
+                          </span>
+                        ) : null}
+                      </dd>
                     </div>
                   )}
                   <div>
@@ -1675,7 +1701,14 @@ export function Dashboard(props: {
               <span>Ulcer</span>
               <b>{p.ulcer == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : p.ulcer.toFixed(3)}</b>
               <span>水下天数</span>
-              <b>{p.underwaterDays}</b>
+              <b>
+                {p.underwaterDays}
+                {p.underwaterEnd ? (
+                  <div className="tiny">
+                    {p.ddRecover ? '至恢复' : '至当前分析截止'} {p.underwaterEnd}
+                  </div>
+                ) : null}
+              </b>
               <span>当前水下</span>
               <b>{p.currentlyUnderwater ? '是' : '否'}</b>
               <span>平均毛敞口</span>
@@ -1694,13 +1727,19 @@ export function Dashboard(props: {
               行为观察按持仓片段。点击一行打开该分组。n&lt;10 不写成规律，n&lt;5 收进低样本分组。
             </p>
             <details className="fold-block" open>
+              <summary>行为摘要</summary>
+              <p className="tiny">
+                高影响低样本：开盘 30min，n=3，均值 −$2,875；探索性结果：尾盘，n=23，均值 +$281；覆盖不足：星期分组有效 {book.checkup.weekdays.reduce((s, r) => s + r.n, 0)}/{book.checkup.weekdays[0]?.total ?? 0}；未发现可复现规律。
+              </p>
+            </details>
+            <details className="fold-block">
               <summary>开盘 / 盘中 / 尾盘</summary>
               <GroupTable
                 rows={book.checkup.sessions}
                 onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
               />
             </details>
-            <details className="fold-block" open>
+            <details className="fold-block">
               <summary>持仓时间</summary>
               <GroupTable
                 rows={book.checkup.holdBuckets}
@@ -1822,17 +1861,17 @@ export function Dashboard(props: {
             <h3>敏感性</h3>
             <p className="muted">{book.sensitivity.note}</p>
             <div className="kv-grid">
-              <span>去掉最大一笔后的期望</span>
-              <b>{book.sensitivity.expectancyDropMaxTrade == null ? '—' : money(book.sensitivity.expectancyDropMaxTrade)}</b>
-              <span>去掉最大单日后的期望</span>
+              <span>去掉最大盈利单后的历史单笔均值</span>
+              <b>{book.sensitivity.expectancyDropMaxWin == null ? '—' : money(book.sensitivity.expectancyDropMaxWin)}</b>
+              <span>去掉最大单日后的历史单笔均值</span>
               <b>{book.sensitivity.expectancyDropMaxDay == null ? '—' : money(book.sensitivity.expectancyDropMaxDay)}</b>
-              <span>最大一笔 / 最大单日占比</span>
-              <b>
-                {book.sensitivity.maxTradePnlShare == null ? '—' : pctPlain(book.sensitivity.maxTradePnlShare, 0)}
-                {' / '}
-                {book.sensitivity.maxDayPnlShare == null ? '—' : pctPlain(Math.abs(book.sensitivity.maxDayPnlShare), 0)}
-              </b>
-              <span>前 1 / 3 / 5 笔盈利占比</span>
+              <span>最大盈利单占总毛利</span>
+              <b>{book.sensitivity.maxWinShareGrossProfit == null ? '—' : pctPlain(book.sensitivity.maxWinShareGrossProfit, 0)}</b>
+              <span>最大亏损单占总毛亏</span>
+              <b>{book.sensitivity.maxLossShareGrossLoss == null ? '—' : pctPlain(book.sensitivity.maxLossShareGrossLoss, 0)}</b>
+              <span>最大单笔绝对盈亏占总绝对盈亏</span>
+              <b>{book.sensitivity.maxAbsShareTotalAbs == null ? '—' : pctPlain(book.sensitivity.maxAbsShareTotalAbs, 0)}</b>
+              <span>前 1 / 3 / 5 笔盈利占总毛利</span>
               <b>
                 {[book.sensitivity.top1Share, book.sensitivity.top3Share, book.sensitivity.top5Share]
                   .map((v) => (v == null ? '—' : pctPlain(v, 0)))
@@ -1844,7 +1883,7 @@ export function Dashboard(props: {
                   .map((v) => (v == null ? '—' : money(v)))
                   .join(' / ')}
               </b>
-              <span>前半 / 后半期望</span>
+              <span>前半 / 后半历史单笔均值</span>
               <b>
                 {book.sensitivity.firstHalfExpectancy == null ? '—' : money(book.sensitivity.firstHalfExpectancy)}
                 {' / '}
@@ -1852,7 +1891,7 @@ export function Dashboard(props: {
               </b>
               <span>FIFO vs 持仓片段</span>
               <b>
-                {book.sensitivity.fifoVsEpisode.fifoN} / {book.sensitivity.fifoVsEpisode.episodeN} 笔 · 期望{' '}
+                {book.sensitivity.fifoVsEpisode.fifoN} / {book.sensitivity.fifoVsEpisode.episodeN} 笔 · 历史单笔均值{' '}
                 {book.sensitivity.fifoVsEpisode.fifoExp == null ? '—' : money(book.sensitivity.fifoVsEpisode.fifoExp)}
                 {' vs '}
                 {book.sensitivity.fifoVsEpisode.episodeExp == null ? '—' : money(book.sensitivity.fifoVsEpisode.episodeExp)}
@@ -1862,7 +1901,7 @@ export function Dashboard(props: {
               <thead>
                 <tr>
                   <th>额外成本</th>
-                  <th>期望</th>
+                  <th>历史单笔均值</th>
                   <th>PF</th>
                 </tr>
               </thead>

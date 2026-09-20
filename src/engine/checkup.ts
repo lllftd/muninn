@@ -33,7 +33,7 @@ function factOf(row: { n: number; pnl: number; winRate: number | null; label: st
   return `${row.n} 笔观察，仍不是稳定结论`
 }
 
-function group(id: string, label: string, list: RoundTrip[]): GroupRow {
+function group(id: string, label: string, list: RoundTrip[], total?: number): GroupRow {
   const wins = list.filter((t) => t.realizedPnl > 0)
   const losses = list.filter((t) => t.realizedPnl < 0)
   const gp = wins.reduce((s, t) => s + t.realizedPnl, 0)
@@ -53,6 +53,8 @@ function group(id: string, label: string, list: RoundTrip[]): GroupRow {
       pnl: 0,
       status: 'empty',
       fact: '无样本',
+      covered: 0,
+      total,
     }
   }
   const winRate = wins.length / n
@@ -70,6 +72,8 @@ function group(id: string, label: string, list: RoundTrip[]): GroupRow {
     pnl: row.pnl,
     status: statusOf(n),
     fact: factOf(row),
+    covered: n,
+    total,
   }
 }
 
@@ -103,11 +107,11 @@ export function buildCheckup(trips: RoundTrip[]): Checkup {
   const tiltAmount = tiltTrades.reduce((s, t) => s + t.realizedPnl, 0)
 
   const sessions = (['open30', 'midday', 'close'] as SessionBucket[]).map((bucket) =>
-    group(bucket, SESSION_LABELS[bucket], closed.filter((t) => t.session === bucket)),
+    group(bucket, SESSION_LABELS[bucket], closed.filter((t) => t.session === bucket), closed.length),
   )
   const sides = [
-    group('long', '多头', closed.filter((t) => t.side === 'long')),
-    group('short', '空头', closed.filter((t) => t.side === 'short')),
+    group('long', '多头', closed.filter((t) => t.side === 'long'), closed.length),
+    group('short', '空头', closed.filter((t) => t.side === 'short'), closed.length),
   ]
   const weekdaysEt = [1, 2, 3, 4, 5].map((d) => {
     const list = closed.filter((t) => {
@@ -115,16 +119,17 @@ export function buildCheckup(trips: RoundTrip[]): Checkup {
       const dt = new Date(Date.UTC(p.year, p.month - 1, p.day))
       return dt.getUTCDay() === d
     })
-    return group(`wd${d}`, WEEKDAYS[d], list)
+    return group(`wd${d}`, WEEKDAYS[d], list, closed.length)
   })
   const holdBuckets = [
-    group('h1', '持仓 <1 日', closed.filter((t) => t.holdMinutes < 24 * 60)),
+    group('h1', '持仓 <1 日', closed.filter((t) => t.holdMinutes < 24 * 60), closed.length),
     group(
       'h2',
       '持仓 1–5 日',
       closed.filter((t) => t.holdMinutes >= 24 * 60 && t.holdMinutes < 5 * 24 * 60),
+      closed.length,
     ),
-    group('h3', '持仓 ≥5 日', closed.filter((t) => t.holdMinutes >= 5 * 24 * 60)),
+    group('h3', '持仓 ≥5 日', closed.filter((t) => t.holdMinutes >= 5 * 24 * 60), closed.length),
   ]
 
   return {

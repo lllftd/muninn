@@ -97,7 +97,7 @@ export function MultiLine(props: {
   const yMin = dataMin - padAmt
   const yMax = dataMax + padAmt
   const span = yMax - yMin || 1
-  const pad = { l: 2, r: 8, t: 10, b: 18 }
+  const pad = { l: 2, r: 88, t: 10, b: 18 }
   const innerW = w - pad.l - pad.r
   const innerH = h - pad.t - pad.b
   const xAt = (i: number) => pad.l + (i / Math.max(n - 1, 1)) * innerW
@@ -214,7 +214,7 @@ export function MultiLine(props: {
           </span>
         ))}
         {props.endLabel ? (
-          <span className="ml-end" style={{ left: xPct(n - 1), top: yTopPct(props.endLabel.value) }}>
+          <span className="ml-end" style={{ left: `calc(${xPct(n - 1)} + 8px)`, top: yTopPct(props.endLabel.value) }}>
             {props.endLabel.text}
           </span>
         ) : null}
@@ -299,7 +299,7 @@ export function DollarDrawdown(props: {
   const min = Math.min(...props.values, 0)
   const max = 0
   const span = max - min || 1
-  const pad = { l: 2, r: 8, t: 10, b: 18 }
+  const pad = { l: 2, r: 88, t: 10, b: 18 }
   const innerW = w - pad.l - pad.r
   const innerH = h - pad.t - pad.b
   const xAt = (i: number) => pad.l + (i / Math.max(n - 1, 1)) * innerW
@@ -345,12 +345,12 @@ export function DollarDrawdown(props: {
           {props.cursor != null && n ? <line x1={xAt(props.cursor)} x2={xAt(props.cursor)} y1={pad.t} y2={pad.t + innerH} className="cursor-line" /> : null}
         </svg>
         {props.trough != null && n ? (
-          <span className="ml-mark down" style={{ left: xPct(props.trough), top: yTopPct(props.values[props.trough]) }}>
+          <span className="ml-mark down" style={{ left: `calc(${xPct(props.trough)} - 40px)`, top: `calc(${yTopPct(props.values[props.trough])} - 20px)` }}>
             谷底 {moneyK(props.values[props.trough])}
           </span>
         ) : null}
         {props.peak != null && n ? (
-          <span className="ml-mark up" style={{ left: xPct(props.peak), top: yTopPct(0) }}>
+          <span className="ml-mark up" style={{ left: `calc(${xPct(props.peak)} - 30px)`, top: `calc(${yTopPct(0)} - 18px)` }}>
             高点 $0
           </span>
         ) : null}

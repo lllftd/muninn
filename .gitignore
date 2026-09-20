@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.venv
 
 # 敏感交易数据（勿推送到公开仓库）
 History Transactions-*.csv

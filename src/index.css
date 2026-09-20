@@ -173,6 +173,7 @@ h1, h2, h3 { font-weight: 650; letter-spacing: -0.02em; }
 }
 .muted { color: var(--t2); }
 .tiny { color: var(--t2); font-size: 12px; line-height: 1.5; }
+.panel > p.muted, .panel > p.tiny { max-width: 880px; }
 .up { color: var(--up); }
 .down { color: var(--down); }
 .error { color: var(--down); }
@@ -458,6 +459,11 @@ button.stat:hover, .stat.clickable:hover { border-color: var(--gold); }
   color: var(--t2);
   font-size: 13px;
 }
+.status-strip.compact {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+}
 .status-strip b { color: var(--t1); font-weight: 650; }
 .status-strip .spacer { flex: 1; }
 .kpi-summary {
@@ -541,7 +547,7 @@ button.stat:hover, .stat.clickable:hover { border-color: var(--gold); }
 .explain { margin-top: 10px; color: var(--t2); font-size: 12.5px; }
 .explain p { margin: 8px 0 0; line-height: 1.55; }
 tr.low-n { opacity: 0.8; }
-.grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 24px; align-items: start; }
+.grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 24px; align-items: start; max-width: 1400px; margin: 0 auto; }
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -639,7 +645,7 @@ tr.low-n { opacity: 0.8; }
   cursor: pointer;
 }
 .sorts button.on { color: var(--gold); border-color: var(--sort-on-border); }
-table.grid { width: 100%; border-collapse: collapse; }
+table.grid { width: 100%; border-collapse: collapse; max-width: 1100px; }
 table.grid th { text-align: left; color: var(--t3); font-weight: 500; padding: 8px 6px; }
 table.grid td { padding: 10px 6px; border-top: 1px solid var(--line); vertical-align: top; font-variant-numeric: tabular-nums; }
 table.trips tbody tr { cursor: pointer; }

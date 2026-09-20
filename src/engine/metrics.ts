@@ -34,6 +34,11 @@ function lastClose(bars: Bar[] | undefined, date: string, fallback: number): num
   return hit?.close ?? fallback
 }
 
+function calendarDaysBetween(a: string, b: string): number {
+  const ms = new Date(`${b}T00:00:00Z`).getTime() - new Date(`${a}T00:00:00Z`).getTime()
+  return Math.max(0, Math.round(ms / 86400000))
+}
+
 type Lot = { symbol: string; qty: number; price: number; dir: 1 | -1 }
 
 export function buildEquity(args: {
@@ -357,6 +362,8 @@ export function summarize(args: {
   let ddTrough: string | null = null
   let ddRecover: string | null = null
   let currentlyUnderwater = false
+  let underwaterDaysKind: 'calendar' | 'observed' = 'observed'
+  let underwaterEnd: string | null = null
   let ulcer: number | null = null
   let calmar: number | null = null
   let relativeSpx: number | null = null
@@ -435,6 +442,9 @@ export function summarize(args: {
     maxDrawdown = maxDd
     currentlyUnderwater = last ? last.drawdown < -1e-9 : false
     if (currentlyUnderwater) ddRecover = null
+    underwaterDaysKind = 'calendar'
+    underwaterEnd = ddRecover ?? last?.date ?? null
+    if (ddStart && underwaterEnd) maxUnder = calendarDaysBetween(ddStart, underwaterEnd)
     ulcer = Math.sqrt(equity.reduce((s, p) => s + p.drawdown ** 2, 0) / equity.length)
     calmar = maxDrawdown < 0 && twrAnnualized != null ? twrAnnualized / Math.abs(maxDrawdown) : 0
     relativeSpx = last && last.benchIndex > 0 ? last.index / last.benchIndex - 1 : null
@@ -475,6 +485,9 @@ export function summarize(args: {
     maxDrawdown = null
     currentlyUnderwater = last ? last.equity < peakEq - 1e-6 : false
     if (currentlyUnderwater) ddRecover = null
+    underwaterDaysKind = 'calendar'
+    underwaterEnd = ddRecover ?? last?.date ?? null
+    if (ddStart && underwaterEnd) maxUnder = calendarDaysBetween(ddStart, underwaterEnd)
     ulcer = null
     grossExposureMean = null
     netExposureMean = null
@@ -681,6 +694,8 @@ export function summarize(args: {
     ddTrough,
     ddRecover,
     underwaterDays: maxUnder,
+    underwaterDaysKind,
+    underwaterEnd,
     currentlyUnderwater,
     ulcer,
     grossExposureMean,
