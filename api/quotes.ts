@@ -15,6 +15,7 @@ const UA =
 // Yahoo Finance 需要 cookie + crumb 鉴权，否则匿名请求会返回 429。
 let authCookie = ''
 let authCrumb = ''
+let lastError = ''
 
 function getSetCookies(res: any): string[] {
   const headers = res.headers as unknown as { getSetCookie?: () => string[] }
@@ -112,20 +113,30 @@ async function fetchYahoo(symbol: string, period1: number, period2: number): Pro
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       if (!authCookie || !authCrumb) await refreshYahooAuth()
-    } catch {
+    } catch (e) {
+      lastError = `yahoo-auth: ${e instanceof Error ? e.message : String(e)}`
       return null
     }
     const ysym = encodeURIComponent(yahooSymbol(symbol))
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ysym}?period1=${period1}&period2=${period2}&interval=1d&events=split%2Cdiv&includeAdjustedClose=true&crumb=${encodeURIComponent(authCrumb)}`
-    const res = await fetch(url, {
-      headers: { 'User-Agent': UA, Cookie: authCookie, Accept: 'application/json' },
-    })
+    let res: Response
+    try {
+      res = await fetch(url, {
+        headers: { 'User-Agent': UA, Cookie: authCookie, Accept: 'application/json' },
+      })
+    } catch (e) {
+      lastError = `yahoo-fetch: ${e instanceof Error ? e.message : String(e)}`
+      return null
+    }
     if (res.status === 401 || res.status === 403) {
       authCookie = ''
       authCrumb = ''
       continue
     }
-    if (!res.ok) return null
+    if (!res.ok) {
+      lastError = `yahoo-http: ${res.status}`
+      return null
+    }
     const data = (await res.json()) as {
       chart?: {
         result?: Array<{
@@ -140,10 +151,12 @@ async function fetchYahoo(symbol: string, period1: number, period2: number): Pro
               volume?: Array<number | null>
             }>
             adjclose?: Array<{ adjclose?: Array<number | null> }>
-          }
+          }>
         }>
+        error?: { code?: string; description?: string }
       }
     }
+    if (data.chart?.error) lastError = `yahoo-error: ${data.chart.error.code} ${data.chart.error.description}`
     const result = data.chart?.result?.[0]
     const ts = result?.timestamp
     const q = result?.indicators?.quote?.[0]
@@ -159,10 +172,22 @@ async function fetchYahoo(symbol: string, period1: number, period2: number): Pro
 
 async function fetchStooq(symbol: string): Promise<{ bars: ProxyBar[]; splits: number } | null> {
   const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(stooqSymbol(symbol))}&i=d`
-  const res = await fetch(url, { headers: { 'User-Agent': UA } })
-  if (!res.ok) return null
+  let res: Response
+  try {
+    res = await fetch(url, { headers: { 'User-Agent': UA } })
+  } catch (e) {
+    lastError = `stooq-fetch: ${e instanceof Error ? e.message : String(e)}`
+    return null
+  }
+  if (!res.ok) {
+    lastError = `stooq-http: ${res.status}`
+    return null
+  }
   const text = await res.text()
-  if (!text.includes('Date')) return null
+  if (!text.includes('Date')) {
+    lastError = `stooq-body: ${text.slice(0, 80)}`
+    return null
+  }
   const bars: ProxyBar[] = []
   const lines = text.trim().split(/\r?\n/).slice(1)
   for (const line of lines) {
@@ -212,6 +237,9 @@ export default {
         if (rows[i].splits) splits[symbol] = rows[i].splits
       })
       body = { bars, splits }
+      if (url.searchParams.get('debug') === '1') {
+        body = { bars, splits, debug: { lastError: lastError || 'none', empty: symbols.filter((s) => !bars[s]?.length) } }
+      }
     }
 
     return new Response(JSON.stringify(body), {
