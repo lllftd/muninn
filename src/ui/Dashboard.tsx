@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Brand, ThemeToggle } from './chrome.tsx'
 import { CaptureBar, CoverageMeter, Histogram, MaeBar, MonthBars, MultiLine, Scatter, SignedBars, Stat, StemStrip } from './charts.tsx'
-import { InsightDrawer, coverageLabel, type Insight } from './InsightDrawer.tsx'
+import { InsightDrawer, type Insight } from './InsightDrawer.tsx'
 import { PathDrawer } from './PathDrawer.tsx'
 import { TABS, tabFromView, viewOf, type Tab } from './views.ts'
-import { ciText, clsPnl, finiteNum, holdLabel, money, moneyAbs, moneyK, pct, pctPlain, signed } from '../lib/format.ts'
+import { ciText, clsPnl, coverageLabel, finiteNum, holdLabel, money, moneyAbs, moneyK, pct, pctPlain, signed } from '../lib/format.ts'
 import { etDateKey, etParts } from '../lib/time.ts'
 import type { Bar, Book, CoverageRow, EquityPoint, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
 
@@ -779,9 +779,13 @@ export function Dashboard(props: {
     [book.episodes],
   )
   const symbols = useMemo(() => [...new Set(closedAll.map((t) => t.symbol))].sort(), [closedAll])
-  const rangeDates = range && book.equity[range.lo] && book.equity[range.hi]
-    ? { start: book.equity[range.lo].date, end: book.equity[range.hi].date }
-    : null
+  const rangeDates = useMemo(
+    () =>
+      range && book.equity[range.lo] && book.equity[range.hi]
+        ? { start: book.equity[range.lo].date, end: book.equity[range.hi].date }
+        : null,
+    [range, book.equity],
+  )
   const filtered = Boolean(rangeDates) || sideFilter !== 'all' || symbolFilter.length > 0
   const scoped = useMemo(() => {
     let list = closedAll

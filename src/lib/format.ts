@@ -89,3 +89,10 @@ export function clsPnl(n: number): string {
   if (n < 0) return 'down'
   return ''
 }
+
+export function coverageLabel(status: string, counted?: boolean): string {
+  if (status === 'imported' && counted === false) return '已导入 · 未计入净收益'
+  if (status === 'imported') return '已导入'
+  if (status === 'not_provided') return '未提供'
+  return '无法计算'
+}

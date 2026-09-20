@@ -33,7 +33,7 @@ export function ThemeProvider(props: { children: ReactNode }) {
   return <ThemeCtx.Provider value={{ theme, setTheme }}>{props.children}</ThemeCtx.Provider>
 }
 
-export function useTheme() {
+function useTheme() {
   return useContext(ThemeCtx)
 }
 

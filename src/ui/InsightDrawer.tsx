@@ -1,4 +1,4 @@
-import { ciText, clsPnl, holdLabel, money, moneyAbs, pct, pctPlain } from '../lib/format.ts'
+import { ciText, clsPnl, coverageLabel, holdLabel, money, moneyAbs, pct, pctPlain } from '../lib/format.ts'
 import type { Book, CoverageRow, EquityPoint, GroupRow, RoundTrip } from '../types.ts'
 import type { Tab } from './views.ts'
 
@@ -385,13 +385,6 @@ export function InsightDrawer(props: {
       ) : null}
     </aside>
   )
-}
-
-export function coverageLabel(status: string, counted?: boolean): string {
-  if (status === 'imported' && counted === false) return '已导入 · 未计入净收益'
-  if (status === 'imported') return '已导入'
-  if (status === 'not_provided') return '未提供'
-  return '无法计算'
 }
 
 function coverageWhy(row: CoverageRow): string {
