@@ -52,6 +52,10 @@ describe('monteCarlo', () => {
     expect(mc.terminalPctile).toBeGreaterThanOrEqual(0)
     expect(mc.terminalPctile).toBeLessThanOrEqual(1)
     expect(mc.realizedMaxDD).toBeGreaterThanOrEqual(0)
+    expect(mc.method).toBe('cluster-bootstrap')
+    expect(mc.maxDDs.length).toBe(mc.rounds)
+    expect(mc.note).toMatch(/有放回/)
+    expect(mc.note).toMatch(/不是打乱/)
   })
 })
 

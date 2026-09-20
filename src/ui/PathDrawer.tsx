@@ -1,7 +1,19 @@
 import { DualPath } from './charts.tsx'
 import { clsPnl, holdLabel, money, pct, signed } from '../lib/format.ts'
 import { etDateKey } from '../lib/time.ts'
+import { getTagVerdict, setTagVerdict, type TagVerdict } from '../lib/tagVerdicts.ts'
 import type { Bar, RoundTrip } from '../types.ts'
+import { useState } from 'react'
+
+const R_FLAG_TEXT: Record<string, string> = {
+  'fee-heavy': '费用超过风险单位 20%',
+  'tiny-risk': '风险单位过小（ATR×数量）',
+  'tiny-notional': '名义金额过小',
+  'extreme-r': '|净 R| > 8，口径可能失真',
+  'split-suspect': '疑似未复权 / 公司行动',
+  'atr-missing': '开仓前 ATR 日线不足',
+  'low-price-atr': '低价股 ATR 相对过小',
+}
 
 export function PathDrawer(props: {
   trip: RoundTrip
@@ -9,6 +21,7 @@ export function PathDrawer(props: {
   onClose: () => void
 }) {
   const { trip } = props
+  const [, setTick] = useState(0)
   const start = etDateKey(trip.openTime)
   const end = etDateKey(trip.closeTime || trip.openTime)
   const window = (props.bars || []).filter((b) => b.date >= start && b.date <= end)
@@ -17,6 +30,10 @@ export function PathDrawer(props: {
   const altPnl = altPx != null ? (altPx - trip.openPrice) * trip.qty * dir - trip.fees : null
   const last = window.at(-1)
   const pathNa = trip.maePct == null || trip.mfePct == null
+  const mark = (tag: string, verdict: TagVerdict | null) => {
+    setTagVerdict(trip.id, tag, verdict)
+    setTick((n) => n + 1)
+  }
 
   return (
     <aside className="drawer">
@@ -84,7 +101,7 @@ export function PathDrawer(props: {
         </div>
         <div>
           <dt>日线估算捕获</dt>
-          <dd>{trip.captureRate != null ? pct(trip.captureRate) : 'N/A'}</dd>
+          <dd>{trip.captureRate != null ? `${pct(trip.captureRate)} · 粗估` : 'N/A'}</dd>
         </div>
         <div>
           <dt>回吐 / 恢复</dt>
@@ -97,16 +114,63 @@ export function PathDrawer(props: {
           <dd>{trip.executionLocation != null ? pct(trip.executionLocation, 0) : 'N/A'}</dd>
         </div>
         <div>
-          <dt>ATR标准化盈亏</dt>
-          <dd>{trip.rMultiple != null ? `${signed(trip.rMultiple)}R` : '—'}</dd>
+          <dt>R 单位</dt>
+          <dd>{trip.riskDollars != null ? `${money(trip.riskDollars, 2)} ＝ 开仓前 ATR ${trip.atr?.toFixed(3) ?? '—'} × ${trip.qty}` : '日线不足，缺失'}</dd>
         </div>
+        <div>
+          <dt>价差 R / 费用 R / 净 R</dt>
+          <dd>
+            {trip.rPrice != null ? signed(trip.rPrice) : '—'} / {trip.rFee != null ? trip.rFee.toFixed(2) : '—'} /{' '}
+            {trip.rMultiple != null ? `${signed(trip.rMultiple)}R` : '—'}
+          </dd>
+        </div>
+        {trip.rFlags?.length ? (
+          <div>
+            <dt>R 口径异常</dt>
+            <dd>{trip.rFlags.map((f) => R_FLAG_TEXT[f] || f).join('；')}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>持仓</dt>
           <dd>{holdLabel(trip.holdMinutes)}</dd>
         </div>
       </dl>
+      {trip.tagHints?.length ? (
+        <div className="tag-evidence">
+          <p className="tiny" style={{ margin: '12px 0 6px' }}>
+            行为标记是规则命中，不是事实判断。你可以确认或否认。
+          </p>
+          {trip.tagHints
+            .filter((h) => h.tag !== '同日' && h.tag !== '开盘')
+            .map((h) => {
+              const v = getTagVerdict(trip.id, h.tag)
+              const conf = h.confidence === 'high' ? '高' : h.confidence === 'mid' ? '中' : '低'
+              return (
+                <div key={h.tag} className="hint-card">
+                  <b>
+                    疑似{h.tag}｜置信度{conf}
+                    {v === 'confirm' ? ' · 你已确认' : v === 'deny' ? ' · 你已否认' : ''}
+                  </b>
+                  <p className="tiny">{h.definition}</p>
+                  <p className="tiny">证据：{h.evidence}</p>
+                  <div className="hint-actions">
+                    <button type="button" className="ghost sm" onClick={() => mark(h.tag, 'confirm')}>
+                      属实
+                    </button>
+                    <button type="button" className="ghost sm" onClick={() => mark(h.tag, 'deny')}>
+                      不是
+                    </button>
+                    <button type="button" className="ghost sm" onClick={() => mark(h.tag, null)}>
+                      清除
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+        </div>
+      ) : null}
       <p className="tiny">
-        根据日线 OHLC 估算，不代表真实盘中持仓路径；开仓日和退出日的极值可能发生在持仓区间之外。当日区间事后位置不是滑点，不从盈亏中扣除。
+        根据日线 OHLC 估算，不代表真实盘中持仓路径；开仓日和退出日的极值可能发生在持仓区间之外。当日区间事后位置不是滑点，不从盈亏中扣除。净 R = 已实现 / (ATR×数量)；价差 R 把费用加回。计划止损 R 本轮未接入。
       </p>
     </aside>
   )

@@ -1,4 +1,4 @@
-export const METRIC_VERSION = 'p0p1.5'
+export const METRIC_VERSION = 'p0p2'
 
 export type Side = 'buy' | 'sell'
 export type Direction = 'long' | 'short'
@@ -10,7 +10,14 @@ export type CapitalSource = 'user' | 'none' | 'sleeve'
 export type SampleBanner = 'cannot-assess' | 'insufficient' | 'positive-sample' | 'sensitive'
 export type XirrStatus = 'ok' | 'incomplete' | 'too-few' | 'no-root' | 'multiple' | 'failed'
 export type BenchKind = 'spy-total-return' | 'spx-price'
-export type GroupStatus = 'empty' | 'raw' | 'observe' | 'ok'
+export type GroupStatus = 'empty' | 'raw' | 'observe' | 'weak' | 'ok'
+export type TagConfidence = 'low' | 'mid' | 'high'
+export type TagHint = {
+  tag: string
+  confidence: TagConfidence
+  evidence: string
+  definition: string
+}
 
 export type BrokerId = 'futu' | 'ib' | 'tiger' | 'generic'
 
@@ -154,7 +161,16 @@ export type RoundTrip = {
   splitSuspect: boolean
   moneyLeft: number | null
   lateStopCost: number | null
+  /** 净 R = 已实现盈亏 / (开仓前 ATR × 数量)。含费用。 */
   rMultiple: number | null
+  /** 价差 R = (已实现 + 费用) / 风险单位。 */
+  rPrice: number | null
+  /** 费用 R = 费用 / 风险单位。 */
+  rFee: number | null
+  /** 风险单位美元：开仓前 ATR × 数量。 */
+  riskDollars: number | null
+  rFlags: string[]
+  tagHints: TagHint[]
   atr: number | null
   positionPct: number | null
   executionLocation: number | null
@@ -258,7 +274,16 @@ export type Performance = {
   expectancy: MetricPoint
   profitFactor: MetricPoint
   payoff: MetricPoint
-  atrR: { mean: number | null; median: number | null; p05: number | null; p10: number | null; n: number }
+  atrR: {
+    mean: number | null
+    median: number | null
+    p05: number | null
+    p10: number | null
+    n: number
+    meanPrice: number | null
+    meanFee: number | null
+    flagged: number
+  }
   capture: MetricPoint
   giveback: MetricPoint
   recovery: MetricPoint
@@ -323,6 +348,8 @@ export type GroupRow = {
   winCi: Interval | null
   medianAtrR: number | null
   expectancy: number | null
+  /** 去掉盈亏绝对值最大的一笔后再平均。n<2 为 null。 */
+  expectancyExMax: number | null
   pf: number | null
   pnl: number
   status: GroupStatus
@@ -427,19 +454,23 @@ export type Sensitivity = {
   note: string
 }
 
-/** 蒙特卡洛:按开仓日 cluster 有放回重采样你的真实交易 N 次,摊开"运气"成分。不制造新信息。 */
+/** 蒙特卡洛:按开仓日 cluster **有放回**抽样,不是改顺序。终值可变,因为大赢可能被抽到多次。 */
 export type MonteCarlo = {
+  method: 'cluster-bootstrap'
+  nTrades: number
   rounds: number
   steps: number
   /** 每一步(第 k 笔)累计已实现盈亏的分位带,长度 = steps。 */
   bands: { p5: number[]; p25: number[]; p50: number[]; p75: number[]; p95: number[] }
-  /** 你的真实累计路径(按平仓顺序),叠在扇形上看落点。 */
+  /** 真实累计路径(按平仓顺序)——这是交易序列回撤,不是账户回撤。 */
   realizedPath: number[]
-  /** 每次重采样的最终盈亏,用来画"所有可能结果"的分布直方图。 */
+  /** 每次有放回抽样的最终盈亏。因可重复抽到同一笔,终值会变。 */
   terminals: number[]
   realizedTerminal: number
-  /** realized 终值落在重采样终值分布里的百分位(0..1)。越高=越靠"幸运尾巴"。 */
+  /** realized 终值落在抽样终值分布里的百分位(0..1)。越高=越靠"幸运尾巴"。 */
   terminalPctile: number
+  /** 每次抽样的交易序列最大回撤(美元,从累计已实现高峰回落)。 */
+  maxDDs: number[]
   realizedMaxDD: number
   maxDDPctile: number
   /** P(最大回撤 ≥ 阈值)。 */

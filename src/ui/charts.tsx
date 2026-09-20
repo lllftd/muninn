@@ -1,5 +1,6 @@
-import { Fragment, useId, useRef, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { moneyK } from '../lib/format.ts'
+import { etDateKey } from '../lib/time.ts'
 
 export function LineChart(props: {
   width?: number
@@ -509,6 +510,7 @@ export function MaeBar(props: { mae: number | null; mfe: number | null }) {
 
 export function CaptureBar(props: { capture: number; n: number }) {
   const cap = Math.max(0, Math.min(1, props.capture))
+  const digits = props.n < 10 ? 0 : 1
   return (
     <div className="capture-split">
       <div className="capture-track" aria-hidden>
@@ -516,7 +518,8 @@ export function CaptureBar(props: { capture: number; n: number }) {
         <span className="give" style={{ width: `${(1 - cap) * 100}%` }} />
       </div>
       <div className="tiny">
-        已捕获 {(cap * 100).toFixed(1)}%　回吐 {((1 - cap) * 100).toFixed(1)}%　盈利交易 n={props.n}｜日线估算
+        日线粗估｜盈利样本 {props.n} 笔｜约 {(cap * 100).toFixed(digits)}% 捕获、{((1 - cap) * 100).toFixed(digits)}% 回吐
+        ｜不知盘中先后，不用于精确执行评价
       </div>
     </div>
   )
@@ -554,6 +557,7 @@ export type BarItem = {
   label: string
   value: number | null
   n?: number
+  dim?: boolean
 }
 
 export function SignedBars(props: {
@@ -573,7 +577,9 @@ export function SignedBars(props: {
             <div key={item.id} className="div-bar-row">
               <span className="div-label wide">{item.label}</span>
               <div className="div-track" />
-              <span className="div-amt muted">{item.n === 0 ? '无样本' : '—'}</span>
+              <span className="div-amt muted">
+                {item.n === 0 ? '无样本' : item.n != null && item.n < 5 ? `${item.n}笔·不排名` : '—'}
+              </span>
             </div>
           )
         }
@@ -583,9 +589,9 @@ export function SignedBars(props: {
           <>
             <span className="div-label wide">{item.label}</span>
             <div className="div-track">
-              <div className={`div-bar ${up ? 'win' : 'loss'}`} style={{ width }} />
+              <div className={`div-bar ${up ? 'win' : 'loss'}${item.dim ? ' dim' : ''}`} style={{ width }} />
             </div>
-            <span className={`div-amt ${up ? 'up' : 'down'}`}>
+            <span className={`div-amt ${item.dim ? 'muted' : up ? 'up' : 'down'}`}>
               {fmt(item.value)}
               {item.n != null ? <i className="bar-n">n={item.n}</i> : null}
             </span>
@@ -776,13 +782,70 @@ export function Histogram(props: {
   )
 }
 
+/** 蜂群:重叠的点按固定间距上下错开,避免随机抖动看起来疏密不一。 */
+function beeswarmOffsets(
+  values: number[],
+  xPct: (v: number) => number,
+  widthPx: number,
+  radiusPx: number,
+  maxAbsY: number,
+): number[] {
+  const n = values.length
+  const ys = Array.from({ length: n }, () => 0)
+  if (widthPx <= 0 || n === 0) return ys
+  const minDist = radiusPx * 2 + 2
+  const minDist2 = minDist * minDist
+  const xs = values.map((v) => (xPct(v) / 100) * widthPx)
+  const placed: Array<{ x: number; y: number }> = []
+  const maxK = Math.max(1, Math.floor(maxAbsY / minDist))
+  for (let i = 0; i < n; i++) {
+    const x = xs[i]
+    const candidates = [0]
+    for (let k = 1; k <= maxK; k++) {
+      candidates.push(k * minDist, -k * minDist)
+    }
+    let chosen = 0
+    for (const cy of candidates) {
+      let ok = true
+      for (let j = 0; j < placed.length; j++) {
+        const dx = placed[j].x - x
+        const dy = placed[j].y - cy
+        if (dx * dx + dy * dy < minDist2) {
+          ok = false
+          break
+        }
+      }
+      if (ok) {
+        chosen = cy
+        break
+      }
+    }
+    ys[i] = chosen
+    placed.push({ x, y: chosen })
+  }
+  return ys
+}
+
 /**
  * 箱线 + 散点:箱=中间 50%(Q1–Q3),竖线=中位,须=正常范围,每笔一个点。
  * 极端离群值不拉伸坐标轴,而是钉在两端做成"‹N / N›"角标 —— 抗离群、信息量高。
  */
 export function BoxStrip(props: { values: number[]; format?: (v: number) => string; height?: number }) {
+  const plotRef = useRef<HTMLDivElement>(null)
+  const [plotW, setPlotW] = useState(0)
   const xs = props.values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
-  if (xs.length < 4) return <p className="tiny">样本太少,不画分布。</p>
+  const hasPlot = xs.length >= 4
+  useLayoutEffect(() => {
+    if (!hasPlot) return
+    const el = plotRef.current
+    if (!el) return
+    const apply = () => setPlotW(el.clientWidth)
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [hasPlot])
+  if (!hasPlot) return <p className="tiny">样本太少,不画分布。</p>
   const fmt = props.format ?? ((v: number) => String(v))
   const q = (p: number) => {
     const i = (xs.length - 1) * p
@@ -806,27 +869,26 @@ export function BoxStrip(props: { values: number[]; format?: (v: number) => stri
   const at = (v: number) => P + ((Math.max(domLo, Math.min(domHi, v)) - domLo) / dom) * (100 - 2 * P)
   const outLo = xs.filter((v) => v < domLo).length
   const outHi = xs.filter((v) => v > domHi).length
-  const jit = (i: number) => ((((i * 2654435761) >>> 0) % 1000) / 1000 - 0.5) * 30
+  const visible = xs.filter((v) => v >= domLo && v <= domHi)
+  const swarmY = beeswarmOffsets(visible, at, plotW, 4, 38)
   const zeroIn = 0 >= domLo && 0 <= domHi
   return (
     <div className="boxstrip" style={{ height: props.height ?? 118 }}>
-      <div className="bx-plot">
+      <div className="bx-plot" ref={plotRef}>
         {zeroIn ? <span className="bx-zero" style={{ left: `${at(0)}%` }} /> : null}
         <span className="bx-whisker" style={{ left: `${at(wLo)}%`, width: `${at(wHi) - at(wLo)}%` }} />
         <span className="bx-cap" style={{ left: `${at(wLo)}%` }} />
         <span className="bx-cap" style={{ left: `${at(wHi)}%` }} />
         <span className="bx-box" style={{ left: `${at(q1)}%`, width: `${Math.max(0.5, at(q3) - at(q1))}%` }} />
         <span className="bx-med" style={{ left: `${at(med)}%` }} title={`中位 ${fmt(med)}`} />
-        {xs.map((v, i) =>
-          v < domLo || v > domHi ? null : (
-            <span
-              key={i}
-              className={`bx-dot ${v >= 0 ? 'up' : 'down'}`}
-              style={{ left: `${at(v)}%`, top: `calc(50% + ${jit(i)}px)` }}
-              title={fmt(v)}
-            />
-          ),
-        )}
+        {visible.map((v, i) => (
+          <span
+            key={i}
+            className={`bx-dot ${v >= 0 ? 'up' : 'down'}`}
+            style={{ left: `${at(v)}%`, top: `calc(50% + ${swarmY[i] ?? 0}px)` }}
+            title={fmt(v)}
+          />
+        ))}
         {outLo ? (
           <span className="bx-out left" title={`${outLo} 笔比 ${fmt(domLo)} 还差(最极端 ${fmt(xs[0])})`}>
             ‹ {outLo} 个极端
@@ -983,9 +1045,17 @@ export function CalendarHeatmap(props: { days: Array<{ date: string; value: numb
   }
   const PITCH = 15 // cell 12px + gap 3px
   const monthMarks: Array<{ week: number; label: string }> = []
+  const yearMarks: Array<{ week: number; label: string }> = []
   let prevMonth = ''
+  let prevYear = ''
   weeks.forEach((col, wi) => {
-    const mo = col[0].date.slice(5, 7)
+    const hit = col.find((c) => c.v != null) ?? col[0]
+    const year = hit.date.slice(0, 4)
+    const mo = hit.date.slice(5, 7)
+    if (year !== prevYear) {
+      yearMarks.push({ week: wi, label: `${year}年` })
+      prevYear = year
+    }
     if (mo !== prevMonth) {
       monthMarks.push({ week: wi, label: `${Number(mo)}月` })
       prevMonth = mo
@@ -995,6 +1065,13 @@ export function CalendarHeatmap(props: { days: Array<{ date: string; value: numb
   return (
     <div className="cal-heat">
       <div className="cal-grid">
+        <div className="cal-years">
+          {yearMarks.map((y) => (
+            <span key={y.week} style={{ left: y.week * PITCH }}>
+              {y.label}
+            </span>
+          ))}
+        </div>
         <div className="cal-months">
           {monthMarks.map((m) => (
             <span key={m.week} style={{ left: m.week * PITCH }}>
@@ -1030,50 +1107,120 @@ export function CalendarHeatmap(props: { days: Array<{ date: string; value: numb
   )
 }
 
-export function StemStrip(props: {
+function ymLabel(isoYm: string) {
+  const [y, m] = isoYm.split('-')
+  if (!y || !m) return isoYm
+  return `${y.slice(2)}年${Number(m)}月`
+}
+
+/** 按平仓顺序等宽画每一笔,叠累计已实现。日历空档不再把图拉稀。 */
+export function PnlSequence(props: {
   points: Array<{ id: string; t: number; v: number; label?: string }>
   format?: (v: number) => string
   height?: number
   onPick?: (id: string) => void
 }) {
   if (!props.points.length) return null
+  const rows = [...props.points].sort((a, b) => a.t - b.t || a.id.localeCompare(b.id))
+  let run = 0
+  const series = rows.map((p) => {
+    run += p.v
+    return { ...p, cum: run }
+  })
   const w = 640
-  const h = props.height ?? 96
-  const pad = { l: 44, r: 12, t: 8, b: 8 }
+  const h = props.height ?? 168
+  const pad = { l: 44, r: 40, t: 10, b: 28 }
   const innerW = w - pad.l - pad.r
   const innerH = h - pad.t - pad.b
-  const t0 = Math.min(...props.points.map((p) => p.t))
-  const t1 = Math.max(...props.points.map((p) => p.t))
-  const spanT = Math.max(t1 - t0, 1)
-  const maxAbs = Math.max(...props.points.map((p) => Math.abs(p.v)), 1)
-  const xAt = (t: number) => pad.l + ((t - t0) / spanT) * innerW
+  const maxAbs = Math.max(...series.flatMap((p) => [Math.abs(p.v), Math.abs(p.cum)]), 1)
   const yPx = (v: number) => pad.t + (1 - (v + maxAbs) / (2 * maxAbs)) * innerH
   const zero = yPx(0)
+  const gap = innerW / series.length
+  const bw = Math.max(3, Math.min(16, gap * 0.72))
+  const xAt = (i: number) => pad.l + (i + 0.5) * gap
   const fmt = props.format ?? moneyK
+  const ticks = niceTicks(-maxAbs, maxAbs, 4, 0)
+  const dates = series.map((p) => etDateKey(new Date(p.t)))
+  let xLabels = dateTickLabels(dates, series.length).map((x) => ({ i: x.i, label: ymLabel(x.label) }))
+  if (xLabels.length <= 1 && series.length > 1) {
+    xLabels = [
+      { i: 0, label: dates[0].slice(5).replace('-', '/') },
+      { i: series.length - 1, label: dates[series.length - 1].slice(5).replace('-', '/') },
+    ]
+  }
+  const cumPath = series.map((p, i) => `${i ? 'L' : 'M'}${xAt(i).toFixed(1)},${yPx(p.cum).toFixed(1)}`).join(' ')
+  const last = series[series.length - 1]
+  const L = (x: number) => `${(x / w) * 100}%`
+  const T = (y: number) => `${(y / h) * 100}%`
   return (
     <div className="svg-wrap">
-      <svg viewBox={`0 0 ${w} ${h}`} className="chart stem" preserveAspectRatio="none">
-        <line x1={pad.l} x2={w - pad.r} y1={zero} y2={zero} className="base-line" />
-        {props.points.map((p) => (
+      <svg viewBox={`0 0 ${w} ${h}`} className="chart vbars" preserveAspectRatio="none">
+        {ticks.map((t) => (
           <line
-            key={p.id}
-            x1={xAt(p.t)}
-            x2={xAt(p.t)}
-            y1={zero}
-            y2={yPx(p.v)}
-            stroke={p.v >= 0 ? 'var(--up)' : 'var(--down)'}
-            strokeWidth={1.6}
-            strokeLinecap="round"
-            className="stem-line"
-            onClick={() => props.onPick?.(p.id)}
-          >
-            <title>{p.label || fmt(p.v)}</title>
-          </line>
+            key={t}
+            x1={pad.l}
+            x2={w - pad.r}
+            y1={yPx(t)}
+            y2={yPx(t)}
+            className={Math.abs(t) < 1e-9 ? 'base-line' : 'grid'}
+          />
         ))}
+        {series.map((p, i) => {
+          const x = xAt(i) - bw / 2
+          const y = Math.min(yPx(p.v), zero)
+          const bh = Math.max(2, Math.abs(yPx(p.v) - zero))
+          return (
+            <g key={p.id}>
+              <rect
+                x={pad.l + i * gap}
+                y={pad.t}
+                width={gap}
+                height={innerH}
+                fill="transparent"
+                className="seq-hit"
+                onClick={() => props.onPick?.(p.id)}
+              >
+                <title>{p.label || fmt(p.v)}</title>
+              </rect>
+              <rect
+                className="cbar"
+                x={x}
+                y={y}
+                width={bw}
+                height={bh}
+                rx={2}
+                fill={p.v >= 0 ? 'var(--up)' : 'var(--down)'}
+                pointerEvents="none"
+              />
+            </g>
+          )
+        })}
+        {series.length > 1 ? (
+          <path
+            d={cumPath}
+            fill="none"
+            stroke="var(--gold)"
+            strokeWidth={1.8}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            vectorEffect="nonScalingStroke"
+            pointerEvents="none"
+          />
+        ) : null}
       </svg>
       <div className="svg-lbls" aria-hidden>
-        <span style={{ left: `${((pad.l - 6) / w) * 100}%`, top: `${(zero / h) * 100}%`, transform: 'translate(-100%,-50%)' }}>
-          {fmt(0)}
+        {ticks.map((t) => (
+          <span key={t} style={{ left: L(pad.l - 6), top: T(yPx(t)), transform: 'translate(-100%,-50%)' }}>
+            {fmt(t)}
+          </span>
+        ))}
+        {xLabels.map((x) => (
+          <span key={x.i} style={{ left: L(xAt(x.i)), top: T(h - 8), transform: 'translate(-50%,-50%)' }}>
+            {x.label}
+          </span>
+        ))}
+        <span className="ml-end" style={{ left: L(xAt(series.length - 1)), top: T(yPx(last.cum)) }}>
+          {fmt(last.cum)}
         </span>
       </div>
     </div>

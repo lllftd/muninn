@@ -114,7 +114,19 @@ export function replayTrip(trip: RoundTrip, bars: Bar[] | undefined, vixBars?: B
 
   const atr = bars?.length ? atr20(bars, start) : null
   const risk = atr && atr > 0 ? atr * qty : null
+  const grossPnl = realized + trip.fees
+  const rPrice = risk && risk > 0 ? grossPnl / risk : null
+  const rFee = risk && risk > 0 ? trip.fees / risk : null
   const rMultiple = risk && risk > 0 ? realized / risk : null
+  const notional = open * qty
+  const rFlags: string[] = []
+  if (risk != null && trip.fees > 0.2 * risk) rFlags.push('fee-heavy')
+  if (risk != null && risk < 8) rFlags.push('tiny-risk')
+  if (notional > 0 && notional < 250) rFlags.push('tiny-notional')
+  if (rMultiple != null && Math.abs(rMultiple) > 8) rFlags.push('extreme-r')
+  if (splitSuspect) rFlags.push('split-suspect')
+  if (!sameDay && atr == null) rFlags.push('atr-missing')
+  if (open > 0 && open < 5 && atr != null && atr / open < 0.015) rFlags.push('low-price-atr')
   const stopPct = atr && open ? atr / open : null
   const stopPrice = stopPct != null ? open * (1 - stopPct * dir) : null
   const stopPnl = stopPrice != null ? (stopPrice - open) * qty * dir - trip.fees : null
@@ -147,6 +159,11 @@ export function replayTrip(trip: RoundTrip, bars: Bar[] | undefined, vixBars?: B
     moneyLeft,
     lateStopCost: Math.max(0, lateStopCost),
     rMultiple,
+    rPrice,
+    rFee,
+    riskDollars: risk,
+    rFlags,
+    tagHints: [],
     atr,
     executionLocation: executionLocation(open, openBar),
     chasePercentile: chase?.percentile ?? null,

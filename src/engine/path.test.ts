@@ -31,9 +31,15 @@ function trip(partial: Partial<RoundTrip>): RoundTrip {
     givebackRate: null,
     recoveryRate: null,
     pathAnomaly: false,
+    splitSuspect: false,
     moneyLeft: null,
     lateStopCost: null,
     rMultiple: null,
+    rPrice: null,
+    rFee: null,
+    riskDollars: null,
+    rFlags: [],
+    tagHints: [],
     atr: null,
     positionPct: null,
     executionLocation: null,
@@ -49,6 +55,8 @@ function trip(partial: Partial<RoundTrip>): RoundTrip {
     setup: '',
     pathSource: 'none',
     splitWarning: false,
+    regime: 'swing',
+    annualizedReturn: null,
     ...partial,
   }
 }
@@ -67,6 +75,33 @@ describe('MAE/MFE replay', () => {
     expect(out.maePct).toBeCloseTo((225.8 - 228.4) / 228.4)
     expect(out.mfePct).toBeCloseTo((241.65 - 228.4) / 228.4)
     expect(out.rMultiple).toBeNull()
+  })
+
+  it('splits net R into price R and fee R', () => {
+    const bars: Bar[] = []
+    for (let i = 0; i < 30; i++) {
+      const d = `2026-01-${String(i + 1).padStart(2, '0')}`
+      bars.push({ date: d, open: 10, high: 10.4, low: 9.6, close: 10, volume: 1 })
+    }
+    bars.push({ date: '2026-02-10', open: 10, high: 10.2, low: 9.8, close: 10, volume: 1 })
+    bars.push({ date: '2026-02-12', open: 10, high: 10.1, low: 9.9, close: 9.95, volume: 1 })
+    const out = replayTrip(
+      trip({
+        qty: 10,
+        openPrice: 10,
+        closePrice: 9.95,
+        fees: 4,
+        realizedPnl: 10 * (9.95 - 10) - 4,
+        openTime: new Date('2026-02-10T15:00:00Z'),
+        closeTime: new Date('2026-02-12T18:00:00Z'),
+      }),
+      bars,
+    )
+    expect(out.riskDollars).toBeGreaterThan(0)
+    expect(out.rPrice).not.toBeNull()
+    expect(out.rFee).not.toBeNull()
+    expect(out.rMultiple).toBeCloseTo((out.rPrice as number) - (out.rFee as number), 5)
+    expect(out.rFlags.includes('fee-heavy') || Math.abs(out.rMultiple as number) > 0).toBe(true)
   })
 
   it('returns N/A for same-day round trips', () => {

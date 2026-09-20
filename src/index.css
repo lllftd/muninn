@@ -575,7 +575,6 @@ tr.low-n { opacity: 0.8; }
 .chart.scatter { height: 260px; }
 .chart.vbars { height: 168px; }
 .chart.hist { height: 150px; }
-.chart.stem { height: 96px; }
 .chart-label { font-size: 10px; fill: var(--t3); }
 .scatter-legend {
   display: flex;
@@ -720,6 +719,39 @@ tr.low-n { opacity: 0.8; }
   color: var(--t1);
   margin: 10px 0;
 }
+.quality-rows { margin-top: 4px; }
+.quality-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.quality-row:first-child { border-top: 0; }
+.quality-q {
+  font-size: 13px;
+  color: var(--t1);
+  font-weight: 600;
+  text-align: left;
+}
+button.quality-q {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  color: var(--t1);
+}
+button.quality-q:hover { color: var(--gold); }
+.quality-v { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.quality-note {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--t2);
+  line-height: 1.5;
+}
 .plain-facts { margin: 10px 0 0; padding-left: 18px; }
 .plain-facts li { margin-bottom: 4px; line-height: 1.5; }
 /* 箱线 + 散点 */
@@ -773,6 +805,8 @@ tr.low-n { opacity: 0.8; }
 /* 日历热力 */
 .cal-heat { margin-top: 10px; }
 .cal-grid { overflow-x: auto; padding-bottom: 4px; }
+.cal-years { position: relative; height: 15px; margin-left: 24px; }
+.cal-years span { position: absolute; top: 0; font-size: 11px; color: var(--t2); white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600; }
 .cal-months { position: relative; height: 15px; margin-left: 24px; }
 .cal-months span { position: absolute; top: 0; font-size: 11px; color: var(--t3); white-space: nowrap; }
 .cal-body { display: flex; }
@@ -853,6 +887,7 @@ table.trips tbody tr:hover, table.trips tr.on { background: var(--row-hover); }
 .div-bar { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; transition: filter 0.12s ease; }
 .div-bar.win { left: 50%; background: var(--up); }
 .div-bar.loss { right: 50%; background: var(--down); }
+.div-bar.dim { opacity: 0.42; }
 .div-bar-row:hover .div-bar { filter: brightness(1.12); }
 .div-amt { width: 108px; text-align: right; font-size: 12px; flex: none; font-variant-numeric: tabular-nums; }
 .div-amt .bar-n { font-style: normal; color: var(--t3); margin-left: 6px; font-size: 10px; }
@@ -905,7 +940,8 @@ table.trips tbody tr:hover, table.trips tr.on { background: var(--row-hover); }
   color: var(--t1);
 }
 .meter-v i { font-style: normal; color: var(--t3); }
-.stem-line { cursor: pointer; }
+.seq-hit { cursor: pointer; }
+.seq-hit:hover ~ .cbar { filter: brightness(1.14); }
 .div-divider { height: 1px; background: var(--line); margin: 6px 0; }
 .edge-track { position: relative; height: 14px; background: var(--line2); border-radius: 4px; margin-bottom: 6px; }
 .edge-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--est); border-radius: 4px; }
@@ -935,6 +971,18 @@ table.trips tbody tr:hover, table.trips tr.on { background: var(--row-hover); }
   margin: 0 4px 4px 0;
   display: inline-block;
 }
+.tag.suspected { border-style: dashed; opacity: 0.92; }
+.tag.denied { text-decoration: line-through; opacity: 0.55; }
+.tag.confirmed { border-color: var(--up); color: var(--up); }
+.hint-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--panel2);
+}
+.hint-card b { font-size: 13px; }
+.hint-actions { display: flex; gap: 6px; margin-top: 6px; }
 .kv-grid {
   display: grid;
   grid-template-columns: 1fr auto;

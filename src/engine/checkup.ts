@@ -1,7 +1,7 @@
 import { etDateKey, etParts } from '../lib/time.ts'
 import { mean, median, wilsonInterval } from '../lib/stats.ts'
 import { REGIME_LABELS, REGIME_ORDER, holdDiagnostic, regimeMix } from './regime.ts'
-import type { Checkup, Credibility, GroupRow, GroupStatus, RoundTrip, SampleBanner, SessionBucket } from '../types.ts'
+import type { Checkup, Credibility, GroupRow, GroupStatus, RoundTrip, SampleBanner, SessionBucket, TagHint } from '../types.ts'
 
 const SESSION_LABELS: Record<SessionBucket, string> = {
   open30: '开盘 30min',
@@ -15,23 +15,16 @@ function statusOf(n: number): GroupStatus {
   if (n <= 0) return 'empty'
   if (n < 5) return 'raw'
   if (n < 10) return 'observe'
+  if (n < 30) return 'weak'
   return 'ok'
 }
 
 function factOf(row: { n: number; pnl: number; winRate: number | null; label: string }): string {
   if (row.n <= 0) return '无样本'
-  if (row.n < 5) {
-    const allLoss = row.winRate === 0
-    return `${row.n} 笔${allLoss ? '，均亏损' : ''}。仅为观察事实，不支持行为结论`
-  }
-  if (row.n < 10) {
-    const allLoss = row.winRate === 0
-    const allWin = row.winRate === 1
-    if (allLoss) return `${row.n} 笔样本均亏损，样本不足，不能推断 ${row.label} 稳定较差`
-    if (allWin) return `${row.n} 笔样本均盈利，样本不足，不能推断 ${row.label} 稳定较好`
-    return `${row.n} 笔，样本不足，不能写成可重复规律`
-  }
-  return `${row.n} 笔观察，仍不是稳定结论`
+  if (row.n < 5) return `${row.n} 笔，只列交易，不排名、不报均值`
+  if (row.n < 10) return `${row.n} 笔，探索性观察，可能被一两笔撑起来`
+  if (row.n < 30) return `${row.n} 笔，只够弱结论，不能当可重复规律`
+  return `${row.n} 笔，可以进入规则验证，仍不能外推样本外`
 }
 
 function group(id: string, label: string, list: RoundTrip[], total?: number): GroupRow {
@@ -50,6 +43,7 @@ function group(id: string, label: string, list: RoundTrip[], total?: number): Gr
       winCi: null,
       medianAtrR: null,
       expectancy: null,
+      expectancyExMax: null,
       pf: null,
       pnl: 0,
       status: 'empty',
@@ -59,6 +53,13 @@ function group(id: string, label: string, list: RoundTrip[], total?: number): Gr
   }
   const winRate = wins.length / n
   const wilson = n >= 5 ? wilsonInterval(wins.length, n) : null
+  const pnls = list.map((t) => t.realizedPnl)
+  const expectancy = mean(pnls)
+  let expectancyExMax: number | null = null
+  if (n >= 2) {
+    const maxI = pnls.reduce((best, v, i) => (Math.abs(v) > Math.abs(pnls[best]) ? i : best), 0)
+    expectancyExMax = mean(pnls.filter((_, i) => i !== maxI))
+  }
   const row = { n, pnl: list.reduce((s, t) => s + t.realizedPnl, 0), winRate, label }
   return {
     id,
@@ -67,8 +68,9 @@ function group(id: string, label: string, list: RoundTrip[], total?: number): Gr
     winRate,
     winCi: wilson ? { lo: wilson.lo, hi: wilson.hi, method: 'wilson' } : null,
     medianAtrR: median(rs),
-    expectancy: mean(list.map((t) => t.realizedPnl)),
-    pf: gl > 1e-9 ? gp / gl : gp > 0 ? Number.POSITIVE_INFINITY : 0,
+    expectancy: n >= 5 ? expectancy : null,
+    expectancyExMax: n >= 5 ? expectancyExMax : null,
+    pf: n >= 5 ? (gl > 1e-9 ? gp / gl : gp > 0 ? Number.POSITIVE_INFINITY : 0) : null,
     pnl: row.pnl,
     status: statusOf(n),
     fact: factOf(row),
@@ -160,8 +162,8 @@ export function buildCheckup(trips: RoundTrip[]): Checkup {
       amount: tiltAmount,
       fact:
         afterLoss.length < 5
-          ? `亏损后样本 ${afterLoss.length} 笔，不足以判断是否加码`
-          : `${tiltTrades.length}/${afterLoss.length} 在亏损后 2 小时内再开仓，观察事实，不是建议`,
+          ? `亏损后再开仓样本 ${afterLoss.length} 笔，不足以谈加码`
+          : `疑似 Tilt：${tiltTrades.length}/${afterLoss.length} 在亏损后 2 小时内再开仓。这是规则命中，不是心理鉴定。`,
     },
     chase: {
       covered: chaseCovered.length,
@@ -172,7 +174,7 @@ export function buildCheckup(trips: RoundTrip[]): Checkup {
       fact:
         chaseCovered.length === 0
           ? '没有足够的 20 日窗口，追高分位为缺失，不是 0'
-          : `有窗口 ${chaseCovered.length}/${closed.length}；分位≥80 有 ${chased.length} 笔`,
+          : `有 20 日窗口 ${chaseCovered.length}/${closed.length}；分位≥80 记为疑似追高 ${chased.length} 笔，不是已证实追涨`,
     },
     disposition: {
       ratio: dispositionRatio,
@@ -244,27 +246,84 @@ export function buildCredibility(args: {
     bannerText,
     bannerDetail: reasons.join('｜'),
     notes: [
-      `MAE/MFE 可计算 ${pathOk}/${n}，同日往返不计算`,
+      `MAE/MFE 可计算 ${pathOk}/${n}（日线粗估，同日往返不计算）`,
       '本轮只做复盘描述，不输出预测、信号或仓位建议',
     ],
     analysisWindow: `${args.start} → ${args.end}（全样本描述）`,
     oosWindow: '未运行',
     modelTraining: '本轮不适用',
     minSampleNote:
-      '保护同时看笔数和开仓日。闭环不足 30 笔或开仓日过少会触发保护；达到门槛也不代表自动有效。分组 n<10 不生成规律结论；n<5 只显示点估计。',
+      'n<5 只列交易不报均值；5–9 灰显探索性；10–29 弱结论；≥30 才进入规则验证。同时看去掉最大一笔后的均值。',
   }
 }
 
-export function autoTags(trip: RoundTrip): string[] {
-  const tags: string[] = []
-  if (trip.session === 'open30') tags.push('开盘')
-  if ((trip.chasePercentile ?? 0) >= 80 && trip.chasePercentile != null) tags.push('追高')
-  if ((trip.ma50Dist ?? 0) < -0.02) tags.push('低吸')
-  if (trip.closePrice && Math.abs(trip.closePrice / trip.openPrice - 1) <= 0.01 && (trip.maePct ?? 0) <= -0.01) {
-    tags.push('解套区')
+export function autoTagHints(trip: RoundTrip): TagHint[] {
+  const hints: TagHint[] = []
+  if (trip.session === 'open30') {
+    hints.push({
+      tag: '开盘',
+      confidence: 'high',
+      evidence: '开仓落在美东开盘后约 30 分钟内。',
+      definition: '时段标签，不是好坏判断。',
+    })
   }
-  if (trip.prevResult === 'loss' && trip.prevGapHours != null && trip.prevGapHours <= 2) tags.push('Tilt')
-  if (trip.sameDay) tags.push('同日')
-  if (trip.pathAnomaly) tags.push('路径异常')
-  return tags
+  if (trip.chasePercentile != null && trip.chasePercentile >= 80) {
+    hints.push({
+      tag: '追高',
+      confidence: trip.chasePercentile >= 90 ? 'high' : 'mid',
+      evidence: `开仓时 20 日涨幅处在历史 ${trip.chasePercentile.toFixed(0)} 分位。`,
+      definition: '疑似追高：相对自身近期涨幅偏贵。不是建议，也可能只是趋势跟随。',
+    })
+  }
+  if (trip.ma50Dist != null && trip.ma50Dist < -0.02) {
+    hints.push({
+      tag: '低吸',
+      confidence: trip.ma50Dist < -0.05 ? 'mid' : 'low',
+      evidence: `开仓价低于 50 日均线 ${Math.abs(trip.ma50Dist * 100).toFixed(1)}%。`,
+      definition: '疑似低吸：相对均线偏便宜。不是价值判断。',
+    })
+  }
+  if (
+    trip.closePrice &&
+    trip.openPrice > 0 &&
+    Math.abs(trip.closePrice / trip.openPrice - 1) <= 0.01 &&
+    (trip.maePct ?? 0) <= -0.01
+  ) {
+    hints.push({
+      tag: '解套区',
+      confidence: 'low',
+      evidence: `收盘价回到开仓价附近（±1%），持仓期内日线估算曾回撤 ${((trip.maePct as number) * 100).toFixed(1)}%。也可能是正常重新入场。`,
+      definition: '仅当「几乎原价离场」且「持仓期出现过明显浮亏」时标记。不是心理鉴定。',
+    })
+  }
+  if (trip.prevResult === 'loss' && trip.prevGapHours != null && trip.prevGapHours <= 2) {
+    const mins = Math.max(1, Math.round(trip.prevGapHours * 60))
+    hints.push({
+      tag: 'Tilt',
+      confidence: trip.prevGapHours <= 0.5 ? 'high' : trip.prevGapHours <= 1 ? 'mid' : 'low',
+      evidence: `亏损平仓后 ${mins} 分钟内同方向或下一笔再开仓。`,
+      definition: '疑似 Tilt：亏损后很快再开。仓位是否放大看账户层，不在这一笔上坐实。',
+    })
+  }
+  if (trip.sameDay) {
+    hints.push({
+      tag: '同日',
+      confidence: 'high',
+      evidence: '开平仓落在同一交易日，日线 MAE/MFE 不适用。',
+      definition: '路径口径标签。',
+    })
+  }
+  if (trip.pathAnomaly) {
+    hints.push({
+      tag: '路径异常',
+      confidence: 'mid',
+      evidence: '已实现盈亏超过日线估算 MFE，日线高低可能没覆盖真实成交。',
+      definition: '数据口径警告，不是交易评价。',
+    })
+  }
+  return hints
+}
+
+export function autoTags(trip: RoundTrip): string[] {
+  return autoTagHints(trip).map((h) => h.tag)
 }

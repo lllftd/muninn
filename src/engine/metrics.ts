@@ -696,6 +696,13 @@ export function summarize(args: {
       p05: quantile(rs, 0.05),
       p10: quantile(rs, 0.1),
       n: rs.length,
+      meanPrice: closed.filter((t) => t.rPrice != null).length
+        ? mean(closed.map((t) => t.rPrice).filter((v): v is number => v != null))
+        : null,
+      meanFee: closed.filter((t) => t.rFee != null).length
+        ? mean(closed.map((t) => t.rFee).filter((v): v is number => v != null))
+        : null,
+      flagged: closed.filter((t) => (t.rFlags ?? []).length > 0).length,
     },
     capture: metric(
       captureAgg,

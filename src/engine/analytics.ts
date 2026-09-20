@@ -72,8 +72,8 @@ function maxDrawdown(cumulative: number[]): number {
 }
 
 /**
- * 蒙特卡洛:按开仓日 cluster 有放回重采样你的真实交易 N 次,得到终值/最大回撤的分布,
- * 以及你的真实结果落在其中的百分位。它不制造新信息——只是把"运气"成分摊开来看。
+ * 蒙特卡洛:按开仓日 cluster **有放回**抽样 N 次。终值会变,因为大赢可被重复抽到。
+ * 这不是打乱顺序——打乱顺序总盈亏不变。
  */
 export function monteCarlo(clusters: number[][], realizedSequence: number[], seed = MC_SEED, rounds = MC_ROUNDS): MonteCarlo | null {
   const n = realizedSequence.length
@@ -122,6 +122,8 @@ export function monteCarlo(clusters: number[][], realizedSequence: number[], see
   const pLose = lostMoney / rounds
 
   return {
+    method: 'cluster-bootstrap',
+    nTrades: n,
     rounds,
     steps,
     bands: { p5: band(0.05), p25: band(0.25), p50: band(0.5), p75: band(0.75), p95: band(0.95) },
@@ -129,10 +131,11 @@ export function monteCarlo(clusters: number[][], realizedSequence: number[], see
     terminals,
     realizedTerminal,
     terminalPctile: share(terminals, (v) => v <= realizedTerminal),
+    maxDDs,
     realizedMaxDD,
     maxDDPctile: share(maxDDs, (v) => v <= realizedMaxDD),
     ddProb,
-    note: `按开仓日 cluster 有放回重采样 ${rounds} 次,seed ${seed}。重采样假设你这些交易是有代表性的样本——它不制造新信息,只把运气成分摊开。重采样里亏损收场的占 ${(pLose * 100).toFixed(0)}%。`,
+    note: `方法是按开仓日有放回抽样（cluster bootstrap），不是打乱这 ${n} 笔的顺序。从历史开仓日里有放回抽取，凑满 ${n} 笔，重复 ${rounds} 次（seed ${seed}）。同一笔大赢可能被抽到多次，所以最终盈亏会变；若只改顺序，总盈亏不变、只会改回撤路径。抽样里亏损收场占 ${(pLose * 100).toFixed(0)}%。回撤是交易序列回撤（按抽取顺序累加已实现），不是账户净值回撤。`,
   }
 }
 

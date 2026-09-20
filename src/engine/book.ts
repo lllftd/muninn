@@ -3,7 +3,7 @@ import { buildEpisodes } from './episode.ts'
 import { importFutu, parseCashflows } from './futu.ts'
 import { attachPositionPct, buildEquity, summarize } from './metrics.ts'
 import { replayAll } from './path.ts'
-import { autoTags, buildCheckup, buildCredibility } from './checkup.ts'
+import { autoTagHints, buildCheckup, buildCredibility } from './checkup.ts'
 import { enrichRegime } from './regime.ts'
 import { monteCarlo, regimeCumulative, runsTest } from './analytics.ts'
 import { etDateKey } from '../lib/time.ts'
@@ -20,8 +20,9 @@ function tagTrips(
     const extra = extraTags?.[key] || []
     const drip =
       [...trip.opens, ...trip.closes].length > 0 && [...trip.opens, ...trip.closes].every((f) => f.kind === 'drip')
-    const tags = [...new Set([...autoTags(trip), ...extra, ...trip.tags, ...(drip ? ['DRIP'] : [])])]
-    return { ...trip, tags, setup: tags[0] || '' }
+    const hints = autoTagHints(trip)
+    const tags = [...new Set([...hints.map((h) => h.tag), ...extra, ...trip.tags, ...(drip ? ['DRIP'] : [])])]
+    return { ...trip, tags, tagHints: hints, setup: tags[0] || '' }
   })
 }
 
