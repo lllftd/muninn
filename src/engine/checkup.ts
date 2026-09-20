@@ -53,7 +53,6 @@ function group(id: string, label: string, list: RoundTrip[], total?: number): Gr
       pnl: 0,
       status: 'empty',
       fact: '无样本',
-      covered: 0,
       total,
     }
   }
@@ -72,7 +71,6 @@ function group(id: string, label: string, list: RoundTrip[], total?: number): Gr
     pnl: row.pnl,
     status: statusOf(n),
     fact: factOf(row),
-    covered: n,
     total,
   }
 }
@@ -117,7 +115,11 @@ export function buildCheckup(trips: RoundTrip[]): Checkup {
     const list = closed.filter((t) => {
       const p = etParts(t.openTime)
       const dt = new Date(Date.UTC(p.year, p.month - 1, p.day))
-      return dt.getUTCDay() === d
+      let wd = dt.getUTCDay()
+      // 美东周日夜盘在交易日历上属于周一；周六凌晨同理归周五。
+      if (wd === 0) wd = 1
+      else if (wd === 6) wd = 5
+      return wd === d
     })
     return group(`wd${d}`, WEEKDAYS[d], list, closed.length)
   })

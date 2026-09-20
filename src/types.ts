@@ -286,7 +286,6 @@ export type GroupRow = {
   pnl: number
   status: GroupStatus
   fact: string
-  covered?: number
   total?: number
 }
 

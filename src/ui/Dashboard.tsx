@@ -130,6 +130,8 @@ function GroupTable(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }
   const ranked = props.rows.filter((s) => s.n >= 5)
   const low = props.rows.filter((s) => s.n > 0 && s.n < 5)
   const empty = props.rows.filter((s) => s.n === 0)
+  const total = props.rows.find((s) => s.total != null)?.total
+  const covered = total != null ? props.rows.reduce((sum, s) => sum + s.n, 0) : null
   const render = (s: GroupRow, lowN: boolean) => (
     <tr
       key={s.id}
@@ -140,11 +142,6 @@ function GroupTable(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }
     >
       <td>
         {s.label}
-        {s.total != null && s.covered != null ? (
-          <div className="tiny muted">
-            有效 {s.covered}/{s.total}｜缺失 {s.total - s.covered}
-          </div>
-        ) : null}
         <div className="tiny">{s.fact}</div>
       </td>
       <td>{s.n}</td>
@@ -162,6 +159,12 @@ function GroupTable(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }
   )
   return (
     <div>
+      {total != null && covered != null ? (
+        <p className="tiny muted">
+          有效 {covered}/{total}
+          {total - covered > 0 ? `｜缺失 ${total - covered}` : '｜全覆盖'}
+        </p>
+      ) : null}
       <table className="grid trips">
         <thead>
           <tr>
