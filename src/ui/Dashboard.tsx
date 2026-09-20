@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Brand, ThemeToggle } from './chrome.tsx'
-import { CaptureBar, CoverageMeter, Histogram, MaeBar, MonthBars, MultiLine, Scatter, SignedBars, Stat, StemStrip } from './charts.tsx'
+import { BoxStrip, BulletRow, CalendarHeatmap, CaptureBar, ColorScatter, CoverageMeter, Histogram, MaeBar, MonthBars, MultiLine, RangeBar, Scatter, SignedBars, SlopeChart, Stat, StemStrip } from './charts.tsx'
 import { InsightDrawer, type Insight } from './InsightDrawer.tsx'
 import { PathDrawer } from './PathDrawer.tsx'
 import { TABS, tabFromView, viewOf, type Tab } from './views.ts'
 import { ciText, clsPnl, coverageLabel, finiteNum, holdLabel, money, moneyAbs, moneyK, pct, pctPlain, signed } from '../lib/format.ts'
 import { etDateKey, etParts } from '../lib/time.ts'
-import type { Bar, Book, CoverageRow, EquityPoint, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
+import { REGIME_BOUND_TEXT, REGIME_LABELS } from '../engine/regime.ts'
+import type { Bar, Book, Checkup, CoverageRow, EquityPoint, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
 
 type SortKey = 'time' | 'pnl' | 'r' | 'hold'
 type SideFilter = 'all' | 'long' | 'short'
@@ -163,6 +164,70 @@ function dailyDeltas(equity: EquityPoint[]): number[] {
   const out: number[] = []
   for (let i = 1; i < equity.length; i++) out.push(equity[i].equity - equity[i - 1].equity)
   return out
+}
+
+const REGIME_COLORS: Record<string, string> = {
+  intraday: 'hsl(8 66% 55%)',
+  swing: 'hsl(35 60% 52%)',
+  position: 'hsl(200 50% 50%)',
+  investor: 'hsl(222 38% 56%)',
+}
+
+// 频率构成:每类一行,把混合摊开,每行自带大白话说明,不用行话。
+function RegimeMixBar({ checkup }: { checkup: Checkup }) {
+  const present = checkup.regimeMix.filter((m) => m.n > 0)
+  const total = checkup.regimeMix.reduce((s, m) => s + m.n, 0)
+  if (!total) return null
+  const diag = checkup.holdDiagnostic
+  return (
+    <section className="panel" style={{ padding: '12px 14px', marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+        <h3 style={{ fontSize: 13, margin: 0 }}>频率构成</h3>
+        <span className="tiny muted">按持有时间分成四类 · 描述这段交易,不给人贴标签</span>
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'auto 1fr auto',
+          columnGap: 14,
+          rowGap: 8,
+          alignItems: 'center',
+          marginTop: 12,
+        }}
+      >
+        {present.map((m) => (
+          <Fragment key={m.regime}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
+              <i style={{ width: 9, height: 9, borderRadius: 2, background: REGIME_COLORS[m.regime], display: 'inline-block' }} />
+              <b style={{ fontSize: 13 }}>{REGIME_LABELS[m.regime]}</b>
+              <span className="tiny muted">{REGIME_BOUND_TEXT[m.regime]}</span>
+            </span>
+            <span style={{ height: 8, background: 'var(--panel2)', borderRadius: 4, position: 'relative', minWidth: 48 }}>
+              <span
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  left: 0,
+                  width: `${m.share * 100}%`,
+                  background: REGIME_COLORS[m.regime],
+                  borderRadius: 4,
+                }}
+              />
+            </span>
+            <span className="tiny" style={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+              {m.n} 笔 · {Math.round(m.share * 100)}%
+            </span>
+          </Fragment>
+        ))}
+      </div>
+      {diag.fitsDefaultBands != null ? (
+        <p className="tiny muted" style={{ margin: '12px 0 0' }}>
+          {diag.note}
+        </p>
+      ) : null}
+    </section>
+  )
 }
 
 function GroupViz(props: { title: string; rows: GroupRow[]; onPick: (row: GroupRow) => void }) {
@@ -382,6 +447,7 @@ function BookPathChart(props: {
           marks={props.marks}
           onCursor={props.onCursor}
           onRange={props.onRange}
+          signedFill={{ up: 'var(--up-fill)', down: 'var(--down-fill)' }}
           series={[{ values: props.equity.map((e) => e.equity), color: 'var(--gold)', width: 2 }]}
         />
         {props.hover ? (
@@ -687,32 +753,23 @@ function PnLBySymbol(props: { trips: RoundTrip[] }) {
 
 function RDistribution(props: { trips: RoundTrip[] }) {
   const rs = props.trips.map((t) => t.rMultiple).filter((r): r is number => r != null && Number.isFinite(r))
-  if (!rs.length) return null
-  const buckets = [
-    { label: '≤ -5R', lo: -Infinity, hi: -5 },
-    { label: '-5R~-2R', lo: -5, hi: -2 },
-    { label: '-2R~0R', lo: -2, hi: 0 },
-    { label: '0R~2R', lo: 0, hi: 2 },
-    { label: '≥ 2R', lo: 2, hi: Infinity },
-  ]
-  const counts = buckets.map((b) => rs.filter((r) => r >= b.lo && r < b.hi).length)
-  const maxCount = Math.max(...counts, 1)
+  if (rs.length < 3) return null
   const mean = rs.reduce((s, r) => s + r, 0) / rs.length
   const sorted = [...rs].sort((a, b) => a - b)
   const median = sorted.length % 2 ? sorted[Math.floor(sorted.length / 2)] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+  const winN = rs.filter((r) => r > 0).length
+  const gap = mean - median
+  const tail =
+    gap < -0.5
+      ? `少数极端亏损把平均拉到 ${mean.toFixed(1)}R,远低于中位 ${median.toFixed(1)}R`
+      : gap > 0.5
+        ? `少数大赢把平均拉到 ${mean.toFixed(1)}R,高于中位 ${median.toFixed(1)}R`
+        : `平均与中位接近(${mean.toFixed(1)}R / ${median.toFixed(1)}R),分布没明显偏斜`
   return (
     <div style={{ marginTop: 10 }}>
-      {buckets.map((b, i) => (
-        <div key={b.label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-          <span style={{ width: 68, textAlign: 'right', fontSize: 12 }}>{b.label}</span>
-          <div style={{ flex: 1, position: 'relative', height: 12, background: 'var(--line2)', borderRadius: 4 }}>
-            <div style={{ position: 'absolute', left: 0, top: 0, height: 12, width: `${(counts[i] / maxCount) * 100}%`, background: b.lo >= 0 ? 'var(--up)' : 'var(--down)', borderRadius: 4 }} />
-          </div>
-          <span style={{ width: 24, textAlign: 'right', fontSize: 12 }}>{counts[i]}</span>
-        </div>
-      ))}
+      <BoxStrip values={rs} format={(v) => `${v.toFixed(1)}R`} />
       <p className="tiny" style={{ marginTop: 6 }}>
-        中位数 {median.toFixed(2)}R · 平均 {mean.toFixed(2)}R · n={rs.length}。典型交易接近盈亏平衡，少数极端亏损拖累整体。
+        {winN}/{rs.length} 笔为正 R · {tail}。箱=中间一半交易,竖线=中位,点=每一笔(红亏绿赢);两端"极端"角标是被少数离群单撑开的尾巴。
       </p>
     </div>
   )
@@ -764,6 +821,7 @@ export function Dashboard(props: {
   const [cursor, setCursor] = useState<number | null>(null)
   const [range, setRange] = useState<{ lo: number; hi: number } | null>(null)
   const [showAllTrips, setShowAllTrips] = useState(false)
+  const [showAllLenses, setShowAllLenses] = useState(false) // 入场时机面板的逃生口:判错也只花一次点击
 
   useEffect(() => {
     writeView(tab)
@@ -1036,6 +1094,7 @@ export function Dashboard(props: {
               tip="毛利除以毛亏。没有亏损时记为 +∞。大于 1 整体盈利，小于 1 整体亏损。"
             />
           </section>
+          <RegimeMixBar checkup={book.checkup} />
           {!accountOk ? (
             <div className="status-strip">
               <b>账户级指标不可用</b>
@@ -1170,6 +1229,17 @@ export function Dashboard(props: {
                 />
               </div>
             </div>
+          ) : null}
+
+          {book.equity.length > 8 && (accountOk || sleeveOk) ? (
+            <article className="panel" style={{ marginTop: 16 }}>
+              <h3>每日盈亏日历</h3>
+              <p className="muted">每格一个交易日,越绿当天赚得越多、越红亏得越多。一眼看整段哪几周在赚、哪几周在漏。</p>
+              <CalendarHeatmap
+                days={book.equity.slice(1).map((e, i) => ({ date: e.date, value: e.equity - book.equity[i].equity }))}
+                format={money}
+              />
+            </article>
           ) : null}
 
           <details className="fold-block">
@@ -1359,7 +1429,7 @@ export function Dashboard(props: {
         </article>
       ) : null}
 
-      {tab === 'quality' ? (
+      {tab === 'trades' ? (
         <div>
           <div className="filter-row">
             <span className="filter-k">看哪些交易</span>
@@ -1406,6 +1476,29 @@ export function Dashboard(props: {
                 <MetricLine k="历史单笔均值" m={expectancy} kind="money" filtered={filtered} onClick={() => openInsight({ kind: 'expectancy' })} />
                 <MetricLine k={<Hint term="Profit Factor" def="毛利除以毛亏。没有亏损时记为 +∞，bootstrap 里这些轮次保留，不删除。" />} m={profitFactor} kind="num" filtered={filtered} />
                 <MetricLine k="盈亏比" m={p.payoff} kind="num" />
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <p className="tiny" style={{ margin: '0 0 8px' }}>95% 区间 · 点=当前值,竖线=基准。区间跨过基准(黄)= 还不能下结论。</p>
+                {expectancy.value != null && expectancy.ci
+                  ? (() => {
+                      const mag = Math.max(Math.abs(expectancy.ci.lo), Math.abs(expectancy.ci.hi ?? expectancy.value), Math.abs(expectancy.value)) || 1
+                      return (
+                        <RangeBar label="单笔期望" value={expectancy.value} lo={expectancy.ci.lo} hi={expectancy.ci.hi} domain={[-mag * 1.15, mag * 1.15]} refMark={0} format={(v) => money(v)} />
+                      )
+                    })()
+                  : null}
+                {winRate.value != null && winRate.ci ? (
+                  <RangeBar label="胜率" value={winRate.value} lo={winRate.ci.lo} hi={winRate.ci.hi} domain={[0, 1]} refMark={0.5} format={(v) => pctPlain(v, 0)} />
+                ) : null}
+                {profitFactor.value != null && Number.isFinite(profitFactor.value) && profitFactor.ci
+                  ? (() => {
+                      const hiFinite = profitFactor.ci.hi != null && Number.isFinite(profitFactor.ci.hi) ? profitFactor.ci.hi : null
+                      const dom = Math.max(hiFinite ?? profitFactor.value, 2) * 1.1
+                      return (
+                        <RangeBar label="Profit Factor" value={profitFactor.value} lo={profitFactor.ci.lo} hi={hiFinite} domain={[0, dom]} refMark={1} format={(v) => v.toFixed(2)} />
+                      )
+                    })()
+                  : null}
               </div>
               {p.pfInfShare > 0 ? <p className="tiny">Bootstrap 中 {pctPlain(p.pfInfShare, 1)} 的轮次 PF 为 +∞。</p> : null}
               {small ? (
@@ -1600,6 +1693,9 @@ export function Dashboard(props: {
                       {t.rMultiple != null ? `${signed(t.rMultiple)}R` : '—'}
                       <div className="muted">
                         {holdLabel(t.holdMinutes)} {sessionLabel(t)}
+                        {t.annualizedReturn != null && t.holdMinutes >= 10 * 1440
+                          ? ` · 年化 ${t.annualizedReturn > 10 ? '>1000%' : pct(t.annualizedReturn)}`
+                          : ''}
                       </div>
                     </td>
                     <td>
@@ -1637,7 +1733,7 @@ export function Dashboard(props: {
         </div>
       ) : null}
 
-      {tab === 'bench' ? (
+      {tab === 'riskbench' ? (
         <div className="bench">
           {!accountOk ? (
             <>
@@ -1766,7 +1862,7 @@ export function Dashboard(props: {
         </div>
       ) : null}
 
-      {tab === 'risk' ? (
+      {tab === 'riskbench' ? (
         <div className="grid-2">
           <article className="panel wide">
             <h3>
@@ -1965,13 +2061,6 @@ export function Dashboard(props: {
             <div className="kv-grid">
               <span>年化波动</span>
               <b>{p.volAnn == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : pct(p.volAnn)}</b>
-              <span>夏普</span>
-              <b>{p.sharpe == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : p.sharpe.toFixed(2)}</b>
-              <span>索提诺</span>
-              <b>
-                {p.sortino == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : p.sortino.toFixed(2)}
-                {p.sortino != null ? <div className="tiny">门槛 rf</div> : null}
-              </b>
               <span>最大回撤率</span>
               <b>
                 {p.maxDrawdown == null ? (
@@ -2001,6 +2090,79 @@ export function Dashboard(props: {
               <b>{p.netExposureMean == null ? <VChip label="无法计算" tone="na" /> : pctPlain(p.netExposureMean, 0)}</b>
             </div>
           </article>
+          <article className="panel wide">
+            <h3>回报质量比率</h3>
+            <p className="muted">条上红/黄/绿 = 差/中/好区间,黑标是你的值,竖线是基准。都是账户级指标,没填期初净资产时显示待补。</p>
+            {(() => {
+              const bc = p.benchCapture
+              const good3 = [
+                { to: 0, tone: 'bad' as const },
+                { to: 1, tone: 'mid' as const },
+                { to: 3, tone: 'good' as const },
+              ]
+              const rows: Array<{
+                label: string
+                value: number | null
+                text?: string
+                domain: [number, number]
+                bands: Array<{ to: number; tone: 'bad' | 'mid' | 'good' }>
+                ref: number
+                hint?: string
+              }> = [
+                { label: '夏普', value: p.sharpe ?? null, text: p.sharpe?.toFixed(2), domain: [-1, 3], bands: good3, ref: 0, hint: '风险调整后收益。>1 不错,>2 优秀。' },
+                { label: '索提诺', value: p.sortino ?? null, text: p.sortino?.toFixed(2), domain: [-1, 3], bands: good3, ref: 0, hint: '只惩罚下行波动的夏普。门槛 rf。' },
+                { label: 'Calmar', value: p.calmar ?? null, text: p.calmar?.toFixed(2), domain: [-1, 3], bands: good3, ref: 0, hint: '年化收益 / 最大回撤。' },
+                { label: 'Martin', value: p.ulcerPerf ?? null, text: p.ulcerPerf?.toFixed(2), domain: [-1, 3], bands: good3, ref: 0, hint: '年化超额 / Ulcer,回撤深度加权。' },
+                { label: 'Omega', value: p.omega ?? null, text: p.omega?.toFixed(2), domain: [0, 3], bands: [{ to: 1, tone: 'bad' }, { to: 1.5, tone: 'mid' }, { to: 3, tone: 'good' }], ref: 1, hint: '阈值 0 的概率加权收益比,>1 为正。' },
+                { label: '信息比率', value: p.infoRatio ?? null, text: p.infoRatio?.toFixed(2), domain: [-1, 2], bands: [{ to: 0, tone: 'bad' }, { to: 0.5, tone: 'mid' }, { to: 2, tone: 'good' }], ref: 0, hint: '年化超额 / 跟踪误差。' },
+                { label: '上行捕获', value: bc?.upside ?? null, text: bc?.upside != null ? pctPlain(bc.upside, 0) : undefined, domain: [0, 1.5], bands: [{ to: 0.8, tone: 'bad' }, { to: 1, tone: 'mid' }, { to: 1.5, tone: 'good' }], ref: 1, hint: '基准涨时你跟到几成,越高越好。' },
+                { label: '下行捕获', value: bc?.downside ?? null, text: bc?.downside != null ? pctPlain(bc.downside, 0) : undefined, domain: [0, 1.5], bands: [{ to: 1, tone: 'good' }, { to: 1.2, tone: 'mid' }, { to: 1.5, tone: 'bad' }], ref: 1, hint: '基准跌时你跌了几成,越低越抗跌。' },
+                { label: '跑赢率', value: p.battingAvg ?? null, text: p.battingAvg != null ? pctPlain(p.battingAvg, 0) : undefined, domain: [0, 1], bands: [{ to: 0.5, tone: 'bad' }, { to: 0.55, tone: 'mid' }, { to: 1, tone: 'good' }], ref: 0.5, hint: '跑赢基准的交易日占比。' },
+              ]
+              return rows.map((r) => (
+                <BulletRow
+                  key={r.label}
+                  label={r.label}
+                  value={r.value}
+                  valueText={r.text}
+                  domain={r.domain}
+                  bands={r.bands}
+                  refMark={r.ref}
+                  naText={sleeveOk ? '待补账户数据' : '—'}
+                  hint={r.hint}
+                />
+              ))
+            })()}
+          </article>
+          {accountOk && book.equity.some((e) => e.rollingSharpe != null) ? (
+            <article className="panel wide">
+              <h3>滚动 Sharpe / Beta(63 日窗)</h3>
+              <p className="muted">你在变好还是变差?beta 有没有漂?窗口未填满的前段不画。</p>
+              {(() => {
+                const pts = book.equity.filter((e) => e.rollingSharpe != null)
+                const dates = pts.map((e) => e.date)
+                return (
+                  <div className="grid-2">
+                    <MultiLine
+                      height={160}
+                      baseline={0}
+                      tickFormat={(v) => v.toFixed(2)}
+                      dates={dates}
+                      series={[{ values: pts.map((e) => e.rollingSharpe as number), color: 'var(--gold)', width: 1.8 }]}
+                    />
+                    <MultiLine
+                      height={160}
+                      baseline={0}
+                      tickFormat={(v) => v.toFixed(2)}
+                      dates={dates}
+                      series={[{ values: pts.map((e) => e.rollingBeta ?? 0), color: 'var(--t2)', width: 1.8 }]}
+                    />
+                  </div>
+                )
+              })()}
+              <p className="tiny">左:滚动 Sharpe(0 为无风险调整后打平)。右:滚动 Beta(对基准的敏感度)。</p>
+            </article>
+          ) : null}
           {accountOk && book.equity.length ? (
             <article className="panel wide">
               <h3>敞口</h3>
@@ -2029,27 +2191,36 @@ export function Dashboard(props: {
               </div>
               <p className="tiny">虚线毛敞口 · 金线净敞口</p>
             </article>
-          ) : sleeveOk && book.equity.length > 3 ? (
-            <article className="panel wide">
-              <h3>日变动分布</h3>
-              <p className="muted">正股子账本相邻交易日盯市差额。这不是账户波动率。</p>
-              <Histogram values={dailyDeltas(book.equity)} format={moneyK} />
-            </article>
           ) : null}
         </div>
       ) : null}
 
-      {tab === 'behavior' ? (
+      {tab === 'trades' ? (
         <div>
           <p className="muted" style={{ marginBottom: 12 }}>
             行为观察按持仓片段。点一条打开该组。n&lt;10 不写成规律；无样本不画成 0。
           </p>
+          {!book.checkup.sessionRelevant ? (
+            <p className="muted" style={{ marginBottom: 12 }}>
+              入场时段面板已隐藏:日内+波段仅 {book.checkup.sessionCohortN} 笔,样本太小,时段胜率是噪声。判错了?
+              <button
+                type="button"
+                className="ghost sm"
+                style={{ marginLeft: 8 }}
+                onClick={() => setShowAllLenses((v) => !v)}
+              >
+                {showAllLenses ? '收起' : '仍要展开全部镜头'}
+              </button>
+            </p>
+          ) : null}
           <div className="grid-2">
-            <GroupViz
-              title="开盘 / 盘中 / 尾盘"
-              rows={book.checkup.sessions}
-              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-            />
+            {book.checkup.sessionRelevant || showAllLenses ? (
+              <GroupViz
+                title={`开盘 / 盘中 / 尾盘 · 仅 ${book.checkup.sessionCohortN} 笔日内+波段`}
+                rows={book.checkup.sessions}
+                onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+              />
+            ) : null}
             <GroupViz
               title="持仓时间"
               rows={book.checkup.holdBuckets}
@@ -2109,6 +2280,57 @@ export function Dashboard(props: {
               </div>
             </article>
           </div>
+
+          <article className="panel" style={{ marginTop: 24 }}>
+            <h3>各频率累计盈亏</h3>
+            <p className="muted">按平仓时间累计,看日内 / 波段 / 持仓 / 长线各自到底在赚还是在亏。</p>
+            <MultiLine
+              height={220}
+              baseline={0}
+              tickFormat={moneyK}
+              dates={book.analytics.regimeCum.dates}
+              series={book.analytics.regimeCum.series.map((s) => ({
+                values: s.values,
+                color: REGIME_COLORS[s.regime],
+                width: 1.9,
+              }))}
+            />
+            <div className="scatter-legend">
+              {book.analytics.regimeCum.series.map((s) => (
+                <span key={s.regime}>
+                  <i style={{ color: REGIME_COLORS[s.regime] }}>●</i> {s.label}
+                </span>
+              ))}
+            </div>
+          </article>
+
+          <div style={{ marginTop: 24 }}>
+            <GroupViz
+              title="按频率(regime)"
+              rows={book.checkup.regimes}
+              onPick={(row) => openInsight({ kind: 'group', row, trips: book.episodes.filter((t) => t.regime === row.id) })}
+            />
+          </div>
+
+          <article className="panel" style={{ marginTop: 24 }}>
+            <h3>收益率 × 持仓时长</h3>
+            <p className="muted">横轴对数持仓天,纵轴单笔收益率,按频率上色。看你"拿得越久是否越值"。</p>
+            <ColorScatter
+              height={240}
+              logX
+              xFormat={(v) => (v < 1 ? `${Math.round(v * 24)}h` : `${Math.round(v)}d`)}
+              yFormat={(v) => pct(v)}
+              points={book.episodes
+                .filter((t) => t.status === 'closed' && t.holdMinutes > 0 && t.openPrice * t.qty > 0)
+                .map((t) => ({
+                  id: t.id,
+                  x: t.holdMinutes / 1440,
+                  y: t.realizedPnl / (t.openPrice * t.qty),
+                  color: REGIME_COLORS[t.regime],
+                  label: `${t.symbol} · ${pct(t.realizedPnl / (t.openPrice * t.qty))} · ${holdLabel(t.holdMinutes)}`,
+                }))}
+            />
+          </article>
         </div>
       ) : null}
 
@@ -2163,44 +2385,139 @@ export function Dashboard(props: {
             </div>
             <p className="tiny">置信区间仍显示在前几层对应指标旁。这里不堆 p 值，也不运行预测模型。</p>
           </article>
+
           <article className="panel wide">
-            <h3>敏感性</h3>
-            <p className="muted">{book.sensitivity.note}</p>
-            <div className="grid-2">
-              <div>
-                <p className="tiny">盈利集中度（占毛利）</p>
-                {book.sensitivity.top1Share == null ? (
-                  <p className="tiny">没有毛利样本，不把集中度画成 0。</p>
-                ) : (
+            <h3>蒙特卡洛:这成绩里多少是运气</h3>
+            {book.analytics.monteCarlo ? (
+              (() => {
+                const mc = book.analytics.monteCarlo!
+                const pct = Math.round(mc.terminalPctile * 100)
+                const lose = Math.round((mc.terminals.filter((v) => v <= 0).length / mc.terminals.length) * 100)
+                const ddPct = Math.round(mc.maxDDPctile * 100)
+                const verdict =
+                  pct >= 70
+                    ? `偏走运 —— 你的真实成绩比约 ${pct}% 的"平行结果"都好,这段别全记在本事上。`
+                    : pct <= 30
+                      ? `偏背运 —— 你的真实成绩比约 ${100 - pct}% 的"平行结果"都差,方法本身未必这么糟。`
+                      : `运气基本中性 —— 你的真实成绩排在所有"平行结果"的中间(约第 ${pct} 名 / 100)。换个成交顺序,大概率还是这个量级。`
+                return (
                   <>
-                    <CoverageMeter label="最大一笔" value={book.sensitivity.top1Share} />
-                    {book.sensitivity.top3Share != null ? <CoverageMeter label="前 3 笔" value={book.sensitivity.top3Share} /> : null}
-                    {book.sensitivity.top5Share != null ? <CoverageMeter label="前 5 笔" value={book.sensitivity.top5Share} /> : null}
+                    <p className="muted">
+                      把你这些交易随机重排上千次,看你的真实成绩落在所有"平行结果"里的什么位置 —— 用来估运气成分,它不制造新信息。
+                    </p>
+                    <p className="verdict">{verdict}</p>
+                    <Histogram
+                      values={mc.terminals}
+                      bins={29}
+                      format={moneyK}
+                      markerValue={mc.realizedTerminal}
+                      markerLabel="你在这里"
+                    />
+                    <p className="tiny">
+                      每根柱是一种"平行结果"的最终盈亏:0 左边(红)亏损收场,右边(绿)盈利。金线是你的真实成绩。
+                    </p>
+                    <ul className="tiny plain-facts">
+                      <li>
+                        <b>{lose}%</b> 的平行结果最终是亏钱的。{lose >= 55 ? '这套交易本身就偏亏,不只是运气差。' : ''}
+                      </li>
+                      <li>
+                        你实际经历的最大回撤 <b>{moneyAbs(mc.realizedMaxDD)}</b>,比约 {ddPct}% 的平行结果更深
+                        {ddPct >= 60 ? '(算偏难受的一档)' : ''}。
+                      </li>
+                      {mc.ddProb.slice(1).map((d, i) => (
+                        <li key={i}>
+                          还有约 <b>{Math.round(d.prob * 100)}%</b> 的可能,回撤会比 {moneyAbs(d.dd)} 更深。
+                        </li>
+                      ))}
+                    </ul>
                   </>
-                )}
-              </div>
-              <div>
-                <p className="tiny">前半 / 后半历史单笔均值</p>
-                <SignedBars
-                  items={[
-                    { id: 'h1', label: '前半', value: book.sensitivity.firstHalfExpectancy },
-                    { id: 'h2', label: '后半', value: book.sensitivity.secondHalfExpectancy },
-                  ]}
-                  format={money}
-                />
-              </div>
-            </div>
-            {book.sensitivity.cost.some((c) => c.expectancy != null) ? (
-              <>
-                <p className="tiny" style={{ marginTop: 12 }}>额外成本压力：历史单笔均值随 bps 变化。缺失点不连成 0。</p>
-                <MonthBars
-                  items={book.sensitivity.cost
-                    .filter((c) => c.expectancy != null)
-                    .map((c) => ({ label: `${c.bps}bp`, value: c.expectancy as number }))}
-                  format={money}
-                />
-              </>
-            ) : null}
+                )
+              })()
+            ) : (
+              <p className="tiny">闭环不足 30 笔或开仓日过少,不跑蒙特卡洛。</p>
+            )}
+          </article>
+
+          <article className="panel wide">
+            <h3>单笔盈亏分布</h3>
+            <p className="muted">每笔交易一根,按盈亏从小到大排。看你的钱是靠少数大单赚的,还是均匀摊在多笔上。</p>
+            {(() => {
+              const closed = book.episodes.filter((t) => t.status === 'closed')
+              if (closed.length < 3) return <p className="tiny">样本太少,不画分布。</p>
+              const s = p.tradeShape
+              const sorted = [...closed].sort((a, b) => a.realizedPnl - b.realizedPnl)
+              const shape =
+                s.skew != null && s.skew > 0.5
+                  ? '你的盈亏是「多数小额 + 少数大赢」的形状'
+                  : s.skew != null && s.skew < -0.5
+                    ? '你的盈亏是「多数小赢 + 偶发巨亏」的形状'
+                    : '你的盈亏大致对称'
+              const fat = s.kurtosis != null && s.kurtosis > 3 ? ',尾部偏肥 —— 极端单笔比常态更常出现' : ''
+              return (
+                <>
+                  <p className="verdict">
+                    {shape}
+                    {fat}。最惨的 5% 交易,平均每笔亏 {s.cvar95 == null ? '—' : moneyAbs(s.cvar95)}。
+                  </p>
+                  <StemStrip
+                    points={sorted.map((t, i) => ({ id: t.id, t: i, v: t.realizedPnl, label: `${t.symbol} · ${money(t.realizedPnl)}` }))}
+                    format={moneyK}
+                    height={150}
+                    onPick={(id) => openTrip(book.episodes.find((t) => t.id === id)!)}
+                  />
+                  <p className="tiny">
+                    左红=亏损单(越左亏越多)· 右绿=盈利单 · 点一根看那笔。偏度 {s.skew?.toFixed(1) ?? '—'} · 超额峰度{' '}
+                    {s.kurtosis?.toFixed(1) ?? '—'} · 最差 5% 门槛 {s.var95 == null ? '—' : money(s.var95)}。
+                  </p>
+                  <p className="tiny">{book.analytics.runs.note}</p>
+                </>
+              )
+            })()}
+          </article>
+
+          <article className="panel wide">
+            <h3>敏感性:结果稳不稳</h3>
+            <p className="muted">{book.sensitivity.note}</p>
+            {(() => {
+              const sv = book.sensitivity
+              const conc = sv.top1Share
+              const dropWin = sv.expectancyDropMaxWin
+              const concVerdict =
+                conc != null && conc >= 0.5
+                  ? `高度依赖极少数交易:毛利的 ${pctPlain(conc, 0)} 来自最大一笔。去掉它,历史单笔均值就从 ${money(sv.meanPnl ?? 0)} 掉到 ${dropWin == null ? '—' : money(dropWin)} —— 这更像被一两单撑起来,不是稳定的 edge。`
+                  : conc != null
+                    ? `盈利没有过度集中:最大一笔占毛利 ${pctPlain(conc, 0)},拿掉后单笔均值 ${dropWin == null ? '—' : money(dropWin)}。`
+                    : '没有毛利样本,不评估集中度。'
+              const c0 = sv.cost.find((c) => c.bps === 0)?.expectancy
+              const cHi = [...sv.cost].reverse().find((c) => c.expectancy != null)
+              const costText =
+                c0 != null && cHi && cHi.expectancy != null
+                  ? `把成本从 0 加到 ${cHi.bps}bp,单笔均值 ${money(c0)} → ${money(cHi.expectancy)},几乎不动 —— 结果对成本不敏感。`
+                  : null
+              const h1 = sv.firstHalfExpectancy
+              const h2 = sv.secondHalfExpectancy
+              return (
+                <>
+                  <p className="verdict">{concVerdict}</p>
+                  {conc != null ? (
+                    <div style={{ marginTop: 4 }}>
+                      <CoverageMeter label="最大一笔占毛利" value={conc} />
+                      {sv.top3Share != null ? <CoverageMeter label="前 3 笔" value={sv.top3Share} /> : null}
+                      {sv.top5Share != null ? <CoverageMeter label="前 5 笔" value={sv.top5Share} /> : null}
+                    </div>
+                  ) : null}
+                  {h1 != null && h2 != null ? (
+                    <div style={{ maxWidth: 340, marginTop: 10 }}>
+                      <p className="tiny" style={{ margin: 0 }}>前半 → 后半 历史单笔均值{h2 > h1 ? '(在变好)' : h2 < h1 ? '(在变差)' : ''}</p>
+                      <SlopeChart a={{ label: '前半', value: h1 }} b={{ label: '后半', value: h2 }} format={(v) => money(v)} height={110} />
+                    </div>
+                  ) : null}
+                  {costText ? <p className="tiny">{costText}</p> : null}
+                </>
+              )
+            })()}
+            <details className="fold-block">
+              <summary>更多细节</summary>
             <div className="kv-grid">
               <span>去掉最大盈利单后的历史单笔均值</span>
               <b>{book.sensitivity.expectancyDropMaxWin == null ? '—' : money(book.sensitivity.expectancyDropMaxWin)}</b>
@@ -2256,6 +2573,7 @@ export function Dashboard(props: {
                 ))}
               </tbody>
             </table>
+            </details>
           </article>
         </div>
       ) : null}

@@ -1,4 +1,4 @@
-export type Tab = 'ledger' | 'quality' | 'bench' | 'risk' | 'behavior' | 'trust'
+export type Tab = 'ledger' | 'trades' | 'riskbench' | 'trust'
 export type TabTone = 'ok' | 'watch' | 'fail'
 
 export const TABS: Array<{
@@ -8,16 +8,25 @@ export const TABS: Array<{
   view: string
 }> = [
   { id: 'ledger', label: '核算', question: '赚没赚', view: 'ledger' },
-  { id: 'quality', label: '交易质量', question: '交易质量如何', view: 'quality' },
-  { id: 'bench', label: '基准比较', question: '值不值得', view: 'benchmark' },
-  { id: 'risk', label: '风险', question: '承担了什么', view: 'risk' },
-  { id: 'behavior', label: '行为', question: '做了什么', view: 'behavior' },
-  { id: 'trust', label: '可信度', question: '现在能不能信', view: 'trust' },
+  { id: 'trades', label: '交易与行为', question: '做了什么·好不好', view: 'trades' },
+  { id: 'riskbench', label: '风险与基准', question: '承担了什么·值不值', view: 'risk' },
+  { id: 'trust', label: '可信度', question: '能不能信', view: 'trust' },
 ]
 
+// 旧 view 名(合并前的 6 个)映射到新 tab,保证旧链接不失效。
+const VIEW_ALIAS: Record<string, Tab> = {
+  quality: 'trades',
+  behavior: 'trades',
+  benchmark: 'riskbench',
+  bench: 'riskbench',
+  risk: 'riskbench',
+}
+
 export function tabFromView(raw: string | null): Tab {
+  if (!raw) return 'ledger'
   const hit = TABS.find((t) => t.view === raw || t.id === raw)
-  return hit?.id ?? 'ledger'
+  if (hit) return hit.id
+  return VIEW_ALIAS[raw] ?? 'ledger'
 }
 
 export function viewOf(tab: Tab): string {
