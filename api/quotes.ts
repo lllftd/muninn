@@ -13,7 +13,7 @@ const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
 
 // Yahoo/Stooq 会封数据中心 IP，把函数固定在美东（离 Yahoo 最近、风控最松的节点）。
-export const config = { regions: ['iad1'] }
+export const config = { regions: ['iad1'], maxDuration: 60 }
 
 // Yahoo Finance 需要 cookie + crumb 鉴权，否则匿名请求会返回 429。
 let authCookie = ''
@@ -249,12 +249,63 @@ async function fetchStooq(symbol: string): Promise<{ bars: ProxyBar[]; splits: n
   return bars.length ? { bars, splits: 0 } : null
 }
 
+async function fetchYahooViaJina(symbol: string, period1: number, period2: number): Promise<{ bars: ProxyBar[]; splits: number } | null> {
+  // r.jina.ai 从中转 IP 拉 Yahoo chart JSON，绕开数据中心 IP 封锁。免费档约 20 次/分钟。
+  const ysym = encodeURIComponent(yahooSymbol(symbol))
+  const target = `https://query1.finance.yahoo.com/v8/finance/chart/${ysym}?period1=${period1}&period2=${period2}&interval=1d&events=split%2Cdiv&includeAdjustedClose=true`
+  let res: Response
+  try {
+    res = await fetch(`https://r.jina.ai/${target}`, { headers: { 'User-Agent': UA } })
+  } catch (e) {
+    noteError(`jina-fetch(${symbol}): ${e instanceof Error ? e.message : String(e)}`)
+    return null
+  }
+  if (!res.ok) {
+    noteError(`jina-http(${symbol}): ${res.status}`)
+    if (res.status === 429) {
+      // jina 免费档限速，等一拍重试一次
+      await new Promise((r) => setTimeout(r, 3500))
+      try {
+        res = await fetch(`https://r.jina.ai/${target}`, { headers: { 'User-Agent': UA } })
+      } catch {
+        return null
+      }
+      if (!res.ok) {
+        noteError(`jina-http(${symbol}): ${res.status} after retry`)
+        return null
+      }
+    } else {
+      return null
+    }
+  }
+  const text = await res.text()
+  const i = text.indexOf('{')
+  const j = text.lastIndexOf('}')
+  if (i < 0 || j <= i) {
+    noteError(`jina-body(${symbol}): ${text.slice(0, 60).replace(/\s+/g, ' ')}`)
+    return null
+  }
+  let data: { chart?: { result?: YahooChartResult[]; error?: { code?: string; description?: string } } }
+  try {
+    data = JSON.parse(text.slice(i, j + 1)) as typeof data
+  } catch {
+    noteError(`jina-json(${symbol})`)
+    return null
+  }
+  if (data.chart?.error) {
+    noteError(`jina-yahoo(${symbol}): ${data.chart.error.code}`)
+    return null
+  }
+  return parseYahooChart(symbol, data.chart?.result?.[0])
+}
+
 async function loadSymbol(symbol: string, period1: number, period2: number) {
   const key = `${symbol}|${period1}|${period2}`
   const hit = cache.get(key)
   if (hit && Date.now() - hit.at < TTL_MS) return hit
   let pack = await fetchYahoo(symbol, period1, period2).catch(() => null)
   if (!pack) pack = await fetchStooq(symbol).catch(() => null)
+  if (!pack) pack = await fetchYahooViaJina(symbol, period1, period2).catch(() => null)
   if (!pack) return { at: Date.now(), bars: [] as ProxyBar[], splits: 0 }
   const row = { at: Date.now(), bars: pack.bars, splits: pack.splits }
   cache.set(key, row)

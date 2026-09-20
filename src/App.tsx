@@ -7,7 +7,17 @@ import { Dashboard } from './ui/Dashboard.tsx'
 import { Landing } from './ui/Landing.tsx'
 import { etDateKey } from './lib/time.ts'
 import { METRIC_VERSION } from './types.ts'
-import type { Book, QuotePack } from './types.ts'
+import type { Bar, Book, QuotePack } from './types.ts'
+
+type CompactQuotes = { bars: Record<string, Array<[string, number, number, number, number, number]>>; splits: Record<string, number> }
+
+function unpackQuotes(raw: CompactQuotes): QuotePack {
+  const bars: Record<string, Bar[]> = {}
+  for (const [sym, arr] of Object.entries(raw.bars || {})) {
+    bars[sym] = (arr || []).map(([date, open, high, low, close, volume]) => ({ date, open, high, low, close, volume }))
+  }
+  return { bars, splits: raw.splits || {} }
+}
 
 const STAGES = ['正在校验现金流', '正在重建账户日收益', '正在对齐基准和无风险利率', '正在运行 Bootstrap']
 
@@ -38,6 +48,7 @@ export default function App() {
       initialCapital: number | null
       cashflowComplete: boolean
       isSample?: boolean
+      quotesOverride?: QuotePack
     }) => {
       const replacing = book != null
       setBusy(true)
@@ -56,7 +67,7 @@ export default function App() {
         setStage(STAGES[1])
         await sleep(120)
         setStage(STAGES[2])
-        const quotes = await fetchQuotes(symbols, start, end)
+        const quotes = args.quotesOverride ?? (await fetchQuotes(symbols, start, end))
         setStage(STAGES[3])
         await sleep(80)
         const next = assembleBook({
@@ -132,15 +143,26 @@ export default function App() {
   )
 
   const loadRealSample = useCallback(() => {
-    void runUpload({
-      fillText: REAL_FILLS_CSV,
-      orderText: REAL_ORDERS_CSV,
-      cashText: '',
-      accountName: '保证金综合账户 5185',
-      initialCapital: null,
-      cashflowComplete: false,
-      isSample: true,
-    })
+    void (async () => {
+      // 样本账本用内置的静态行情包（部署环境的行情代理可能被数据源封 IP）。
+      let quotesOverride: QuotePack | undefined
+      try {
+        const res = await fetch('/sample-quotes.json')
+        if (res.ok) quotesOverride = unpackQuotes((await res.json()) as CompactQuotes)
+      } catch {
+        quotesOverride = undefined
+      }
+      await runUpload({
+        fillText: REAL_FILLS_CSV,
+        orderText: REAL_ORDERS_CSV,
+        cashText: '',
+        accountName: '保证金综合账户 5185',
+        initialCapital: null,
+        cashflowComplete: false,
+        isSample: true,
+        quotesOverride,
+      })
+    })()
   }, [runUpload])
 
   if (!book) {
