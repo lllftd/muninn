@@ -151,7 +151,7 @@ async function fetchYahoo(symbol: string, period1: number, period2: number): Pro
               volume?: Array<number | null>
             }>
             adjclose?: Array<{ adjclose?: Array<number | null> }>
-          }>
+          }
         }>
         error?: { code?: string; description?: string }
       }
