@@ -460,6 +460,19 @@ button.stat:hover, .stat.clickable:hover { border-color: var(--gold); }
 }
 .status-strip b { color: var(--t1); font-weight: 650; }
 .status-strip .spacer { flex: 1; }
+.kpi-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 14px 0 4px;
+  font-size: 13px;
+  color: var(--t2);
+}
+.kpi-summary b { color: var(--t1); font-size: 15px; font-weight: 700; }
+.kpi-summary .kpi-sep { color: var(--t3); }
+.kpi-summary .kpi-item.warn { color: var(--warn-text); }
+.kpi-summary .kpi-item.ok { color: var(--up); }
 .banner {
   margin: 14px 0 0;
   padding: 10px 12px;

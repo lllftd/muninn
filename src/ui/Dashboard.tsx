@@ -122,8 +122,8 @@ function MetricLine(props: {
 function statusLabel(s: GroupRow): string {
   if (s.status === 'empty') return '无样本'
   if (s.status === 'raw') return '仅观察'
-  if (s.status === 'observe') return '观察事实'
-  return '可描述'
+  if (s.status === 'observe') return '样本不足'
+  return '探索性'
 }
 
 function GroupTable(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }) {
@@ -151,7 +151,7 @@ function GroupTable(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }
       <td className={!lowN && s.n >= 10 && s.expectancy != null ? clsPnl(s.expectancy) : ''}>
         {s.expectancy == null ? '—' : money(s.expectancy)}
       </td>
-      <td>{s.pf == null ? 'N/A' : finiteNum(s.pf)}</td>
+      <td>{s.pf == null ? 'N/A' : !Number.isFinite(s.pf) ? '+∞' : s.pf > 20 ? '> 20' : s.pf.toFixed(2)}</td>
       <td>{statusLabel(s)}</td>
     </tr>
   )
@@ -164,7 +164,7 @@ function GroupTable(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }
             <th>n</th>
             <th>胜率</th>
             <th>中位 ATR-R</th>
-            <th>期望</th>
+            <th>历史单笔均值</th>
             <th>PF</th>
             <th>状态</th>
           </tr>
@@ -816,65 +816,87 @@ export function Dashboard(props: {
         </div>
       ) : null}
 
-      <section className="kpis">
-        <Stat
-          k={<span className="hint">{accountOk ? 'TWR' : '累计盯市盈亏'}</span>}
-          v={accountOk ? signedPct(p.twr) : signedMoney(p.netPnl)}
-          sub={accountOk ? '整本账 · 已剥离出入金' : '正股成交还原 · 费用按已匹配部分计入'}
-          tip={
-            accountOk
-              ? '这是账户自己涨了多少，中途存进去、取出来的钱已经拿掉了。它不是你口袋里实际拿到的回报。'
-              : '没有期初净资产时，不猜账户规模。这条是美股正股成交还原出来的现金加市值，起点为 0，也就是这段正股交易的盯市盈亏。'
-          }
-          onClick={() => openInsight({ kind: 'twr' })}
-        />
-        <Stat
-          k={<span className="hint">历史单笔均值</span>}
-          v={expectancy.value != null ? money(expectancy.value) : 'N/A'}
-          sub={
-            filtered
-              ? '按所选交易重算'
-              : expectancy.ci
-                ? `95% CI：${ciText(expectancy.ci, 'money', 0).replace('–', ' 至 ')}`
-                : '—'
-          }
-          tip="平均每笔交易赚或亏多少钱。置信区间若跨过 0，说明现在还不能称为稳定的正向或负向期望。"
-          onClick={() => openInsight({ kind: 'expectancy' })}
-        />
-        <Stat
-          k={<span className="hint">胜率</span>}
-          v={winRate.value != null ? pctPlain(winRate.value, 0) : 'N/A'}
-          sub={
-            filtered
-              ? `按所选交易 · n=${winRate.n}`
-              : `n=${winRate.n}${winRate.ci ? ` · 95% ${ciText(winRate.ci, 'pct', 0)}` : ''}`
-          }
-          tip="赚了钱的交易占几成。胜率高不等于整体赚钱。"
-          onClick={() => openInsight({ kind: 'winRate' })}
-        />
-        <Stat
-          k={<span className="hint">Profit Factor</span>}
-          v={profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? profitFactor.value.toFixed(2) : '+∞') : 'N/A'}
-          sub={
-            filtered
-              ? '按所选交易重算'
-              : profitFactor.value != null && !Number.isFinite(profitFactor.value)
-                ? '毛利 / 毛亏 · 无亏损'
-                : '毛利 / 毛亏'
-          }
-          tip="毛利除以毛亏。没有亏损时记为 +∞。大于 1 整体盈利，小于 1 整体亏损。"
-        />
-      </section>
-      {!accountOk ? (
-        <div className="status-strip">
-          <b>账户级指标不可用</b>
-          <span>缺少期初净资产及完整现金流，XIRR 与相对基准暂不计算。</span>
-          <span className="spacer" />
-          <button type="button" className="btn-primary sm" onClick={openAccountSupplement}>
-            补充数据
-          </button>
+      {tab === 'ledger' ? (
+        <>
+          <section className="kpis">
+            <Stat
+              k={<span className="hint">{accountOk ? 'TWR' : '累计盯市盈亏'}</span>}
+              v={accountOk ? signedPct(p.twr) : signedMoney(p.netPnl)}
+              sub={accountOk ? '整本账 · 已剥离出入金' : '正股成交还原 · 费用按已匹配部分计入'}
+              tip={
+                accountOk
+                  ? '这是账户自己涨了多少，中途存进去、取出来的钱已经拿掉了。它不是你口袋里实际拿到的回报。'
+                  : '没有期初净资产时，不猜账户规模。这条是美股正股成交还原出来的现金加市值，起点为 0，也就是这段正股交易的盯市盈亏。'
+              }
+              onClick={() => openInsight({ kind: 'twr' })}
+            />
+            <Stat
+              k={<span className="hint">历史单笔均值</span>}
+              v={expectancy.value != null ? money(expectancy.value) : 'N/A'}
+              sub={
+                filtered
+                  ? '按所选交易重算'
+                  : expectancy.ci
+                    ? `95% CI：${ciText(expectancy.ci, 'money', 0).replace('–', ' 至 ')}`
+                    : '—'
+              }
+              tip="平均每笔交易赚或亏多少钱。置信区间若跨过 0，说明现在还不能称为稳定的正向或负向期望。"
+              onClick={() => openInsight({ kind: 'expectancy' })}
+            />
+            <Stat
+              k={<span className="hint">胜率</span>}
+              v={winRate.value != null ? pctPlain(winRate.value, 0) : 'N/A'}
+              sub={
+                filtered
+                  ? `按所选交易 · n=${winRate.n}`
+                  : `n=${winRate.n}${winRate.ci ? ` · 95% ${ciText(winRate.ci, 'pct', 0)}` : ''}`
+              }
+              tip="赚了钱的交易占几成。胜率高不等于整体赚钱。"
+              onClick={() => openInsight({ kind: 'winRate' })}
+            />
+            <Stat
+              k={<span className="hint">Profit Factor</span>}
+              v={profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? profitFactor.value.toFixed(2) : '+∞') : 'N/A'}
+              sub={
+                filtered
+                  ? '按所选交易重算'
+                  : profitFactor.value != null && !Number.isFinite(profitFactor.value)
+                    ? '毛利 / 毛亏 · 无亏损'
+                    : '毛利 / 毛亏'
+              }
+              tip="毛利除以毛亏。没有亏损时记为 +∞。大于 1 整体盈利，小于 1 整体亏损。"
+            />
+          </section>
+          {!accountOk ? (
+            <div className="status-strip">
+              <b>账户级指标不可用</b>
+              <span>缺少期初净资产及完整现金流，XIRR 与相对基准暂不计算。</span>
+              <span className="spacer" />
+              <button type="button" className="btn-primary sm" onClick={openAccountSupplement}>
+                补充数据
+              </button>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="kpi-summary">
+          <span className="kpi-item">
+            <b>{accountOk ? (p.twr == null ? '—' : pctPlain(p.twr, 1)) : money(p.netPnl)}</b> {accountOk ? 'TWR' : '累计盈亏'}
+          </span>
+          <span className="kpi-sep">｜</span>
+          <span className="kpi-item">
+            <b>{winRate.value != null ? pctPlain(winRate.value, 0) : '—'}</b> 胜率
+          </span>
+          <span className="kpi-sep">｜</span>
+          <span className="kpi-item">
+            <b>{profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? profitFactor.value.toFixed(2) : '+∞') : '—'}</b> PF
+          </span>
+          <span className="kpi-sep">｜</span>
+          <span className={accountOk ? 'kpi-item ok' : 'kpi-item warn'}>
+            {accountOk ? '账户数据完整' : '账户数据不完整'}
+          </span>
         </div>
-      ) : null}
+      )}
 
       <nav className="tabs sticky-tabs">
         {TABS.map((item) => (
