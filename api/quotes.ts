@@ -12,6 +12,9 @@ const TTL_MS = 30 * 60 * 1000
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
 
+// Yahoo/Stooq 会封数据中心 IP，把函数固定在美东（离 Yahoo 最近、风控最松的节点）。
+export const config = { regions: ['iad1'] }
+
 // Yahoo Finance 需要 cookie + crumb 鉴权，否则匿名请求会返回 429。
 let authCookie = ''
 let authCrumb = ''
