@@ -1,4 +1,17 @@
-import { csvToObjects } from '../lib/csv.ts'
+import {
+  BROKER_LABEL,
+  cleanSymbol,
+  detectBroker,
+  isJunkFillRow,
+  keepIbDiscriminator,
+  parseAmount,
+  pick,
+  pickFees,
+  pickField,
+  pickTime,
+  unrecognizedMessage,
+} from './columns.ts'
+import { csvHeaders, csvToObjects } from '../lib/csv.ts'
 import { num } from '../lib/format.ts'
 import { parseBrokerTime, parseIsoLike } from '../lib/time.ts'
 import type { BrokerOrder, Cashflow, Fill, ImportResult, Side, Warning } from '../types.ts'
@@ -35,12 +48,12 @@ function parseFilledAvg(raw: string): { qty: number; price: number } {
 }
 
 function feeTotal(row: Record<string, string>): BrokerOrder['fees'] {
-  const commission = num(row['Commission'])
-  const platform = num(row['Platform Fees']) + num(row['Platform Handling Fee'])
-  const sec = num(row['SEC Fees'])
-  const taf = num(row['Trading Activity Fees'])
-  const settlement = num(row['Settlement Fees'])
-  const listed = num(row['Total'])
+  const commission = Math.abs(parseAmount(pick(row, ['Commission', 'Comm', '佣金'])))
+  const platform = Math.abs(parseAmount(pick(row, ['Platform Fees', 'Platform Handling Fee', '平台费'])))
+  const sec = Math.abs(parseAmount(pick(row, ['SEC Fees'])))
+  const taf = Math.abs(parseAmount(pick(row, ['Trading Activity Fees', 'TAF'])))
+  const settlement = Math.abs(parseAmount(pick(row, ['Settlement Fees'])))
+  const listed = Math.abs(parseAmount(pick(row, ['Total', 'Comm/Fee', '费用合计'])))
   const sum = commission + platform + sec + taf + settlement
   return {
     commission,
@@ -52,17 +65,49 @@ function feeTotal(row: Record<string, string>): BrokerOrder['fees'] {
   }
 }
 
-function normSide(raw: string): Side {
-  return raw.toLowerCase().includes('buy') ? 'buy' : 'sell'
+function normSide(raw: string, qty = 0): Side {
+  const s = raw.toLowerCase().trim()
+  if (/buy to cover|to cover/.test(s)) return 'buy'
+  if (/short sell|sell short/.test(s)) return 'sell'
+  if (/\bbuy\b|\bbot\b/.test(s) || s.includes('买入') || s === '买') return 'buy'
+  if (/\bsell\b|\bsld\b/.test(s) || s.includes('卖出') || s.includes('沽') || s === '卖') return 'sell'
+  if (s.includes('买')) return 'buy'
+  if (s.includes('卖')) return 'sell'
+  if (!s) return qty < 0 ? 'sell' : 'buy'
+  return s.includes('buy') ? 'buy' : 'sell'
+}
+
+function normMarket(row: Record<string, string>): string {
+  const raw = `${pickField(row, 'market')} ${pick(row, ['Exchange', 'Listing Exchange'])}`
+  const s = raw.toLowerCase()
+  if (/港股|hkex|sehk|\bhk\b|hkg/.test(s)) return 'HK'
+  if (/日股|tyo|\btse\b|\bjp\b|jpx/.test(s)) return 'JP'
+  if (/a股|沪|深|\bsh\b|\bsz\b|\bcn\b/.test(s)) return 'CN'
+  if (/us|nyse|nasdaq|amex|arca|bats|iex|smart|nms|美股|美国/.test(s)) return 'US'
+  const currency = pickField(row, 'currency').toUpperCase()
+  const asset = pickField(row, 'asset')
+  if (/opt|option|fut|forex|fx|bond|warrant|crypto|cfd/i.test(asset) && !/stock|stk|equity|share|股票/i.test(asset)) {
+    return asset || raw.trim()
+  }
+  if (!raw.trim()) {
+    if (!currency || currency === 'USD') return 'US'
+    return currency
+  }
+  return pickField(row, 'market').trim()
 }
 
 export function parseFills(text: string): Fill[] {
-  return csvToObjects(text).flatMap((row, i) => {
-    const qty = num(row['Fill Qty'] || row['Quantity'] || row['Qty'])
-    const price = num(row['Fill Price'] || row['Price'])
-    const amount = num(row['Fill Amount']) || qty * price
-    const timeRaw = row['Fill Time'] || row['Time'] || ''
-    if (!timeRaw.trim()) return []
+  const objects = keepIbDiscriminator(csvToObjects(text).filter((row) => !isJunkFillRow(row)))
+  return objects.flatMap((row, i) => {
+    const rawQty = parseAmount(pickField(row, 'qty') || pick(row, ['Fill Qty', 'Quantity', 'Qty']))
+    const price = parseAmount(pickField(row, 'price') || pick(row, ['Fill Price', 'Price', 'T. Price']))
+    const rawSide = pickField(row, 'side') || pick(row, ['Side', 'Buy/Sell'])
+    const side = normSide(rawSide, rawQty)
+    const qty = Math.abs(rawQty)
+    const amountRaw = parseAmount(pickField(row, 'amount') || pick(row, ['Fill Amount']))
+    const amount = Math.abs(amountRaw) || qty * price
+    const timeRaw = pickTime(row)
+    if (!timeRaw || !qty || !price) return []
     let time: Date
     try {
       time = parseBrokerTime(timeRaw)
@@ -70,20 +115,22 @@ export function parseFills(text: string): Fill[] {
       return []
     }
     if (!Number.isFinite(time.getTime())) return []
+    const symbol = cleanSymbol(pickField(row, 'symbol') || pick(row, ['Symbol']))
+    if (!symbol) return []
     return [
       {
         id: `f${i + 1}`,
-        symbol: (row['Symbol'] || '').trim().toUpperCase(),
-        name: row['Name'] || row['Symbol'] || '',
-        side: normSide(row['Side'] || ''),
-        rawSide: row['Side'] || '',
+        symbol,
+        name: pickField(row, 'name') || pick(row, ['Name', 'Symbol']) || symbol,
+        side,
+        rawSide: rawSide || (rawQty < 0 ? 'Sell' : 'Buy'),
         qty,
         price,
         amount,
         time,
-        market: row['Markets'] || row['Market'] || '',
-        currency: row['Currency'] || 'USD',
-        fees: 0,
+        market: normMarket(row),
+        currency: pickField(row, 'currency') || pick(row, ['Currency']) || 'USD',
+        fees: pickFees(row),
         kind: 'trade',
       },
     ]
@@ -93,32 +140,35 @@ export function parseFills(text: string): Fill[] {
 export function parseOrders(text: string): BrokerOrder[] {
   return csvToObjects(text)
     .map((row, i) => {
-      const filled = parseFilledAvg(row['Filled@Avg Price'] || '')
+      const filledAvg = parseFilledAvg(pick(row, ['Filled@Avg Price', 'Filled@Avg']))
+      const qty = filledAvg.qty || Math.abs(parseAmount(pick(row, ['Filled Qty', 'Fill Qty', 'Quantity', 'Qty', '成交数量'])))
+      const price = filledAvg.price || parseAmount(pick(row, ['Avg Price', 'Average Price', 'Price', '成交均价', 'T. Price']))
       const fees = feeTotal(row)
-      const status = row['Status'] || ''
+      const status = pick(row, ['Status', '状态']) || (qty > 0 ? 'Filled' : '')
       let time = new Date(0)
-      if (row['Order Time']) {
+      const timeRaw = pick(row, ['Order Time', 'Date/Time', 'DateTime', 'Time', '下单时间']) || pickTime(row)
+      if (timeRaw) {
         try {
-          time = parseBrokerTime(row['Order Time'])
+          time = parseBrokerTime(timeRaw)
         } catch {
           time = new Date(0)
         }
       }
       return {
         id: `o${i + 1}`,
-        symbol: (row['Symbol'] || '').trim().toUpperCase(),
-        side: row['Side'] || '',
+        symbol: cleanSymbol(pickField(row, 'symbol') || pick(row, ['Symbol'])),
+        side: pickField(row, 'side') || pick(row, ['Side']),
         status,
-        filledQty: filled.qty,
-        avgPrice: filled.price,
+        filledQty: qty,
+        avgPrice: price,
         time,
-        market: row['Markets'] || '',
+        market: normMarket(row),
         fees,
-        remainingQty: filled.qty,
+        remainingQty: qty,
         remainingFee: fees.total,
       }
     })
-    .filter((o) => o.filledQty > 0 && /fill/i.test(o.status))
+    .filter((o) => o.filledQty > 0 && (!o.status || /fill|成交|complete/i.test(o.status)))
 }
 
 export function parseCashflows(text: string): Cashflow[] {
@@ -138,6 +188,7 @@ export function matchFees(fills: Fill[], orders: BrokerOrder[]): { fills: Fill[]
   const pool = orders.map((o) => ({ ...o }))
   let unmatched = 0
   const next = fills.map((fill) => {
+    if (fill.fees > 1e-12) return fill
     const candidates = pool
       .map((order, idx) => ({ order, idx }))
       .filter(({ order }) => {
@@ -204,24 +255,29 @@ export function importFutu(fillText: string, orderText?: string): ImportResult {
   const warnings: Warning[] = []
   const dropped = { nonUs: 0, options: 0, funds: 0, fractional: 0, drip: 0 }
   const excludedRows: ImportResult['excludedRows'] = []
-  const objects = csvToObjects(fillText)
+  const headers = csvHeaders(fillText)
+  const broker = detectBroker(headers)
+  const objects = keepIbDiscriminator(csvToObjects(fillText).filter((row) => !isJunkFillRow(row)))
   const raw = parseFills(fillText)
+  if (!raw.length) {
+    throw new Error(unrecognizedMessage(headers))
+  }
   const filtered: Fill[] = []
   let dripKept = 0
   for (const fill of raw) {
     const row = objects[Number(fill.id.replace(/\D/g, '')) - 1]
-    const timeRaw = row?.['Fill Time'] || row?.['Time'] || ''
+    const timeRaw = row ? pickTime(row) : ''
     if (fill.market && fill.market !== 'US') {
       dropped.nonUs += 1
       excludedRows.push({ symbol: fill.symbol, name: fill.name, reason: 'nonUs', qty: fill.qty, time: timeRaw })
       continue
     }
-    if (isOptionSymbol(fill.symbol)) {
+    if (isOptionSymbol(fill.symbol) || /opt|option/i.test(pickField(row || {}, 'asset'))) {
       dropped.options += 1
       excludedRows.push({ symbol: fill.symbol, name: fill.name, reason: 'option', qty: fill.qty, time: timeRaw })
       continue
     }
-    if (isFundName(fill.name, fill.symbol)) {
+    if (isFundName(fill.name, fill.symbol) || /etf|fund/i.test(pickField(row || {}, 'asset'))) {
       dropped.funds += 1
       excludedRows.push({ symbol: fill.symbol, name: fill.name, reason: 'fund', qty: fill.qty, time: timeRaw })
       continue
@@ -259,6 +315,13 @@ export function importFutu(fillText: string, orderText?: string): ImportResult {
       message: `${dripKept} 笔分红再投资/碎股已保留在核算账本，不计入主动交易质量，也不静默删除。`,
     })
   }
+  if (broker === 'generic') {
+    warnings.push({
+      code: 'broker-generic',
+      message: `未识别为富途 / IB / 老虎，已按通用列名解析为成交（${BROKER_LABEL[broker]}）。请核对笔数。`,
+      tone: 'info',
+    })
+  }
 
   return {
     fills: merged,
@@ -269,5 +332,6 @@ export function importFutu(fillText: string, orderText?: string): ImportResult {
     dripKept,
     excludedRows,
     dropped,
+    broker,
   }
 }

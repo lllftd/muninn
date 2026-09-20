@@ -1,6 +1,7 @@
 import { useRef, useState, type ReactNode } from 'react'
 import { CASH_TEMPLATE, FILL_TEMPLATE, ORDER_TEMPLATE } from '../fixtures/sampleBook.ts'
 import { detectKind } from '../lib/csv.ts'
+import { BROKER_LABEL } from '../engine/columns.ts'
 import { importFutu } from '../engine/futu.ts'
 import { Brand, ThemeToggle } from './chrome.tsx'
 import type { ImportResult } from '../types.ts'
@@ -177,7 +178,7 @@ export function Landing(props: {
             {props.busy ? props.stage || '正在分析…' : '查看样本账本'}
           </button>
         </div>
-        <p className="hero-note">仅在浏览器本地处理 · 成交记录必填 · 订单历史可选</p>
+        <p className="hero-note">仅在浏览器本地处理 · 成交记录必填 · 富途 / IB / 老虎均可 · 订单历史可选</p>
         <input
           ref={fillPick}
           type="file"
@@ -193,16 +194,16 @@ export function Landing(props: {
 
       <section className="upload-card">
         <div className="card-k">导入交易记录</div>
-        <div className="card-d">成交记录必填，订单历史可选；文件仅在浏览器本地处理。</div>
+        <div className="card-d">按表头自动识别富途、盈透 IB、老虎，或其他带代码 / 方向 / 数量 / 价格 / 时间的成交导出。</div>
         <div className="drops">
           <Drop
-            title="拖入 History Transactions CSV"
-            hint="或点击选择文件"
+            title="拖入成交记录 CSV"
+            hint="富途 History Transactions · IB Trades · 老虎成交记录"
             required
             file={fills}
             status={
               imported
-                ? `已识别 ${imported.rawCount} 行 · ${imported.fills.length} 行有效 · ${excluded} 行被排除${
+                ? `${BROKER_LABEL[imported.broker]} · ${imported.rawCount} 行 · ${imported.fills.length} 行有效 · ${excluded} 行被排除${
                     imported.dripKept ? ` · ${imported.dripKept} 笔分红再投资已保留` : ''
                   }`
                 : null
@@ -223,8 +224,8 @@ export function Landing(props: {
             }}
           />
           <Drop
-            title="拖入 Order History CSV"
-            hint="或点击选择文件 · 用于补全 Filled 订单费用"
+            title="拖入订单 / 费用明细"
+            hint="富途 Order History；IB / 老虎若成交里已有佣金可省略"
             file={orders}
             status={
               imported && orders
@@ -247,7 +248,9 @@ export function Landing(props: {
 
         {imported ? (
           <div className="validate-strip">
-            <span>已识别 {imported.rawCount} 条成交记录</span>
+            <span>
+              {BROKER_LABEL[imported.broker]} · {imported.rawCount} 条成交记录
+            </span>
             <span>
               保留 {imported.fills.length} 条，排除 {excluded} 条
             </span>

@@ -28,10 +28,82 @@ export function isUsDst(year: number, month0: number, day: number, hour: number)
   return utcGuess >= start && utcGuess < end
 }
 
+function fromYmd(
+  year: number,
+  month1: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  tzRaw?: string,
+): Date {
+  const month = month1 - 1
+  const tz = (tzRaw || 'ET').toUpperCase()
+  let offsetHours = 0
+  if (tz === 'HKT' || tz === 'CST') offsetHours = 8
+  else if (tz === 'JST') offsetHours = 9
+  else if (tz === 'UTC' || tz === 'GMT') offsetHours = 0
+  else if (tz === 'EST') offsetHours = -5
+  else if (tz === 'EDT') offsetHours = -4
+  else offsetHours = isUsDst(year, month, day, hour) ? -4 : -5
+  return new Date(Date.UTC(year, month, day, hour, minute, second) - offsetHours * 3600 * 1000)
+}
+
 export function parseBrokerTime(raw: string): Date {
   const s = raw.trim()
-  const isoTry = Date.parse(s)
-  if (/^\d{4}-\d{2}-\d{2}/.test(s) && Number.isFinite(isoTry)) return new Date(isoTry)
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s) && /(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const isoTry = Date.parse(s)
+    if (Number.isFinite(isoTry)) return new Date(isoTry)
+  }
+
+  const compact = s.match(/^(\d{8})(?:[;,\s]+(\d{4,6}))?(?:\s+([A-Z]{2,4}))?$/)
+  if (compact) {
+    const d = compact[1]
+    const t = (compact[2] || '093000').padEnd(6, '0')
+    return fromYmd(
+      Number(d.slice(0, 4)),
+      Number(d.slice(4, 6)),
+      Number(d.slice(6, 8)),
+      Number(t.slice(0, 2)),
+      Number(t.slice(2, 4)),
+      Number(t.slice(4, 6)),
+      compact[3],
+    )
+  }
+
+  const cn = s.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/)
+  if (cn) {
+    return fromYmd(Number(cn[1]), Number(cn[2]), Number(cn[3]), Number(cn[4] || 0), Number(cn[5] || 0), Number(cn[6] || 0))
+  }
+
+  const ymd = s
+    .replace(/,/g, ' ')
+    .replace(/\s+/g, ' ')
+    .match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?(?:\s+([A-Z]{2,4}))?/)
+  if (ymd) {
+    return fromYmd(
+      Number(ymd[1]),
+      Number(ymd[2]),
+      Number(ymd[3]),
+      Number(ymd[4] || 0),
+      Number(ymd[5] || 0),
+      Number(ymd[6] || 0),
+      ymd[7],
+    )
+  }
+
+  const slash = s.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?(?:\s+([A-Z]{2,4}))?/,
+  )
+  if (slash) {
+    let year = Number(slash[3])
+    if (year < 100) year += 2000
+    const a = Number(slash[1])
+    const b = Number(slash[2])
+    const month = a > 12 ? b : a
+    const day = a > 12 ? a : b
+    return fromYmd(year, month, day, Number(slash[4] || 0), Number(slash[5] || 0), Number(slash[6] || 0), slash[7])
+  }
 
   const withTime = s.match(
     /^([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})(?:\s+([A-Z]{2,4}))?$/,
@@ -46,21 +118,12 @@ export function parseBrokerTime(raw: string): Date {
     throw new Error(`无法解析时间: ${raw}`)
   }
   const month = MONTHS[m[1]]
-  const day = Number(m[2])
-  const year = Number(m[3])
-  const hour = Number(m[4])
-  const minute = Number(m[5])
-  const second = Number(m[6])
-  const tz = (m[7] || 'ET').toUpperCase()
-  let offsetHours = 0
-  if (tz === 'HKT' || tz === 'CST') offsetHours = 8
-  else if (tz === 'JST') offsetHours = 9
-  else if (tz === 'UTC' || tz === 'GMT') offsetHours = 0
-  else if (tz === 'EST') offsetHours = -5
-  else if (tz === 'EDT') offsetHours = -4
-  else offsetHours = isUsDst(year, month, day, hour) ? -4 : -5
-  const utcMs = Date.UTC(year, month, day, hour, minute, second) - offsetHours * 3600 * 1000
-  return new Date(utcMs)
+  if (month == null) {
+    const fallback = Date.parse(s)
+    if (Number.isFinite(fallback)) return new Date(fallback)
+    throw new Error(`无法解析时间: ${raw}`)
+  }
+  return fromYmd(Number(m[3]), month + 1, Number(m[2]), Number(m[4]), Number(m[5]), Number(m[6]), m[7])
 }
 
 export function etParts(date: Date): {

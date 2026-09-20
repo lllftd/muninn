@@ -12,6 +12,8 @@ export type XirrStatus = 'ok' | 'incomplete' | 'too-few' | 'no-root' | 'multiple
 export type BenchKind = 'spy-total-return' | 'spx-price'
 export type GroupStatus = 'empty' | 'raw' | 'observe' | 'ok'
 
+export type BrokerId = 'futu' | 'ib' | 'tiger' | 'generic'
+
 export type Warning = {
   code: string
   message: string
@@ -335,6 +337,7 @@ export type ImportResult = {
   feeUnmatched: number
   dripKept: number
   excludedRows: ExcludedRow[]
+  broker: BrokerId
   dropped: {
     nonUs: number
     options: number
