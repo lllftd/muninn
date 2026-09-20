@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Brand, ThemeToggle } from './chrome.tsx'
-import { BoxStrip, BulletRow, CalendarHeatmap, CaptureBar, ColorScatter, CoverageMeter, Histogram, MaeBar, MonthBars, MultiLine, RangeBar, Scatter, SignedBars, SlopeChart, Stat, StemStrip } from './charts.tsx'
+import { BoxStrip, BulletRow, CalendarHeatmap, CaptureBar, ColorScatter, CoverageMeter, Histogram, MaeBar, MonthBars, MultiLine, RangeBar, Scatter, SignedBars, Stat, StemStrip } from './charts.tsx'
 import { InsightDrawer, type Insight } from './InsightDrawer.tsx'
 import { PathDrawer } from './PathDrawer.tsx'
 import { TABS, tabFromView, viewOf, type Tab } from './views.ts'
@@ -1242,6 +1242,7 @@ export function Dashboard(props: {
             </article>
           ) : null}
 
+          <div className="grid-2" style={{ marginTop: 8 }}>
           <details className="fold-block">
             <summary>对账明细</summary>
             <p className="muted">
@@ -1426,6 +1427,7 @@ export function Dashboard(props: {
               </tbody>
             </table>
           </details>
+          </div>
         </article>
       ) : null}
 
@@ -2049,7 +2051,8 @@ export function Dashboard(props: {
               </div>
             </div>
           </article>
-          <article className="panel wide">
+          <div className="grid-2">
+          <article className="panel">
             <h3>风险数字</h3>
             <p className="muted">
               {accountOk
@@ -2090,7 +2093,7 @@ export function Dashboard(props: {
               <b>{p.netExposureMean == null ? <VChip label="无法计算" tone="na" /> : pctPlain(p.netExposureMean, 0)}</b>
             </div>
           </article>
-          <article className="panel wide">
+          <article className="panel">
             <h3>回报质量比率</h3>
             <p className="muted">条上红/黄/绿 = 差/中/好区间,黑标是你的值,竖线是基准。都是账户级指标,没填期初净资产时显示待补。</p>
             {(() => {
@@ -2134,6 +2137,7 @@ export function Dashboard(props: {
               ))
             })()}
           </article>
+          </div>
           {accountOk && book.equity.some((e) => e.rollingSharpe != null) ? (
             <article className="panel wide">
               <h3>滚动 Sharpe / Beta(63 日窗)</h3>
@@ -2304,33 +2308,33 @@ export function Dashboard(props: {
             </div>
           </article>
 
-          <div style={{ marginTop: 24 }}>
+          <div className="grid-2" style={{ marginTop: 24 }}>
             <GroupViz
               title="按频率(regime)"
               rows={book.checkup.regimes}
               onPick={(row) => openInsight({ kind: 'group', row, trips: book.episodes.filter((t) => t.regime === row.id) })}
             />
+            <article className="panel">
+              <h3>收益率 × 持仓时长</h3>
+              <p className="muted">横轴对数持仓天,纵轴单笔收益率,按频率上色。点一个圆看那笔详情。</p>
+              <ColorScatter
+                height={240}
+                logX
+                xFormat={(v) => (v < 1 ? `${Math.round(v * 24)}h` : `${Math.round(v)}d`)}
+                yFormat={(v) => pct(v)}
+                onPick={(id) => openTrip(book.episodes.find((t) => t.id === id)!)}
+                points={book.episodes
+                  .filter((t) => t.status === 'closed' && t.holdMinutes > 0 && t.openPrice * t.qty > 0)
+                  .map((t) => ({
+                    id: t.id,
+                    x: t.holdMinutes / 1440,
+                    y: t.realizedPnl / (t.openPrice * t.qty),
+                    color: REGIME_COLORS[t.regime],
+                    label: `${t.symbol} · ${pct(t.realizedPnl / (t.openPrice * t.qty))} · ${holdLabel(t.holdMinutes)}`,
+                  }))}
+              />
+            </article>
           </div>
-
-          <article className="panel" style={{ marginTop: 24 }}>
-            <h3>收益率 × 持仓时长</h3>
-            <p className="muted">横轴对数持仓天,纵轴单笔收益率,按频率上色。看你"拿得越久是否越值"。</p>
-            <ColorScatter
-              height={240}
-              logX
-              xFormat={(v) => (v < 1 ? `${Math.round(v * 24)}h` : `${Math.round(v)}d`)}
-              yFormat={(v) => pct(v)}
-              points={book.episodes
-                .filter((t) => t.status === 'closed' && t.holdMinutes > 0 && t.openPrice * t.qty > 0)
-                .map((t) => ({
-                  id: t.id,
-                  x: t.holdMinutes / 1440,
-                  y: t.realizedPnl / (t.openPrice * t.qty),
-                  color: REGIME_COLORS[t.regime],
-                  label: `${t.symbol} · ${pct(t.realizedPnl / (t.openPrice * t.qty))} · ${holdLabel(t.holdMinutes)}`,
-                }))}
-            />
-          </article>
         </div>
       ) : null}
 
@@ -2438,14 +2442,13 @@ export function Dashboard(props: {
             )}
           </article>
 
-          <article className="panel wide">
+          <article className="panel">
             <h3>单笔盈亏分布</h3>
-            <p className="muted">每笔交易一根,按盈亏从小到大排。看你的钱是靠少数大单赚的,还是均匀摊在多笔上。</p>
+            <p className="muted">箱=中间一半的交易,竖线=中位,点=每一笔;极端单笔钉在两端做角标,不拉伸主体。</p>
             {(() => {
               const closed = book.episodes.filter((t) => t.status === 'closed')
-              if (closed.length < 3) return <p className="tiny">样本太少,不画分布。</p>
+              if (closed.length < 4) return <p className="tiny">样本太少,不画分布。</p>
               const s = p.tradeShape
-              const sorted = [...closed].sort((a, b) => a.realizedPnl - b.realizedPnl)
               const shape =
                 s.skew != null && s.skew > 0.5
                   ? '你的盈亏是「多数小额 + 少数大赢」的形状'
@@ -2459,15 +2462,10 @@ export function Dashboard(props: {
                     {shape}
                     {fat}。最惨的 5% 交易,平均每笔亏 {s.cvar95 == null ? '—' : moneyAbs(s.cvar95)}。
                   </p>
-                  <StemStrip
-                    points={sorted.map((t, i) => ({ id: t.id, t: i, v: t.realizedPnl, label: `${t.symbol} · ${money(t.realizedPnl)}` }))}
-                    format={moneyK}
-                    height={150}
-                    onPick={(id) => openTrip(book.episodes.find((t) => t.id === id)!)}
-                  />
+                  <BoxStrip values={closed.map((t) => t.realizedPnl)} format={moneyK} />
                   <p className="tiny">
-                    左红=亏损单(越左亏越多)· 右绿=盈利单 · 点一根看那笔。偏度 {s.skew?.toFixed(1) ?? '—'} · 超额峰度{' '}
-                    {s.kurtosis?.toFixed(1) ?? '—'} · 最差 5% 门槛 {s.var95 == null ? '—' : money(s.var95)}。
+                    红点=亏损单、绿点=盈利单。偏度 {s.skew?.toFixed(1) ?? '—'} · 超额峰度 {s.kurtosis?.toFixed(1) ?? '—'} · 最差 5%
+                    门槛 {s.var95 == null ? '—' : money(s.var95)}。
                   </p>
                   <p className="tiny">{book.analytics.runs.note}</p>
                 </>
@@ -2475,7 +2473,7 @@ export function Dashboard(props: {
             })()}
           </article>
 
-          <article className="panel wide">
+          <article className="panel">
             <h3>敏感性:结果稳不稳</h3>
             <p className="muted">{book.sensitivity.note}</p>
             {(() => {
@@ -2507,10 +2505,9 @@ export function Dashboard(props: {
                     </div>
                   ) : null}
                   {h1 != null && h2 != null ? (
-                    <div style={{ maxWidth: 340, marginTop: 10 }}>
-                      <p className="tiny" style={{ margin: 0 }}>前半 → 后半 历史单笔均值{h2 > h1 ? '(在变好)' : h2 < h1 ? '(在变差)' : ''}</p>
-                      <SlopeChart a={{ label: '前半', value: h1 }} b={{ label: '后半', value: h2 }} format={(v) => money(v)} height={110} />
-                    </div>
+                    <p className="tiny">
+                      分两半看:前半 {money(h1)} → 后半 {money(h2)}({h2 > h1 ? '在变好' : h2 < h1 ? '在变差' : '基本持平'})。
+                    </p>
                   ) : null}
                   {costText ? <p className="tiny">{costText}</p> : null}
                 </>

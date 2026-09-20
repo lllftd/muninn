@@ -432,12 +432,17 @@ export function ColorScatter(props: {
         {yTicks.map((t) => (
           <line key={t} x1={pad.l} x2={w - pad.r} y1={py(t)} y2={py(t)} className={Math.abs(t) < 1e-9 ? 'base-line' : 'grid'} />
         ))}
-        {props.points.map((p) => (
-          <circle key={p.id} cx={px(p.x)} cy={py(p.y)} r={4} fill={p.color} className="dot" opacity={0.82} onClick={() => props.onPick?.(p.id)}>
-            {p.label ? <title>{p.label}</title> : null}
-          </circle>
-        ))}
       </svg>
+      {props.points.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          className="scatter-dot"
+          style={{ left: L(px(p.x)), top: T(py(p.y)), background: p.color }}
+          title={p.label}
+          onClick={() => props.onPick?.(p.id)}
+        />
+      ))}
       <div className="svg-lbls" aria-hidden>
         {yTicks.map((t) => (
           <span key={`y${t}`} style={{ left: L(pad.l - 6), top: T(py(t)), transform: 'translate(-100%,-50%)' }}>
@@ -976,16 +981,41 @@ export function CalendarHeatmap(props: { days: Array<{ date: string; value: numb
     const pctv = Math.round((0.2 + 0.8 * Math.min(1, Math.abs(v) / maxAbs)) * 100)
     return `color-mix(in srgb, var(${v > 0 ? '--up' : '--down'}) ${pctv}%, transparent)`
   }
+  const PITCH = 15 // cell 12px + gap 3px
+  const monthMarks: Array<{ week: number; label: string }> = []
+  let prevMonth = ''
+  weeks.forEach((col, wi) => {
+    const mo = col[0].date.slice(5, 7)
+    if (mo !== prevMonth) {
+      monthMarks.push({ week: wi, label: `${Number(mo)}月` })
+      prevMonth = mo
+    }
+  })
+  const wdays = ['', '一', '', '三', '', '五', '']
   return (
     <div className="cal-heat">
-      <div className="cal-weeks">
-        {weeks.map((col, wi) => (
-          <div key={wi} className="cal-col">
-            {col.map((c) => (
-              <span key={c.date} className="cal-cell" style={{ background: cellBg(c.v) }} title={c.v == null ? c.date : `${c.date} · ${fmt(c.v)}`} />
+      <div className="cal-grid">
+        <div className="cal-months">
+          {monthMarks.map((m) => (
+            <span key={m.week} style={{ left: m.week * PITCH }}>
+              {m.label}
+            </span>
+          ))}
+        </div>
+        <div className="cal-body">
+          <div className="cal-wdays">
+            {wdays.map((d, i) => (d ? <span key={i} style={{ top: i * PITCH }}>{d}</span> : null))}
+          </div>
+          <div className="cal-weeks">
+            {weeks.map((col, wi) => (
+              <div key={wi} className="cal-col">
+                {col.map((c) => (
+                  <span key={c.date} className="cal-cell" style={{ background: cellBg(c.v) }} title={c.v == null ? c.date : `${c.date} · ${fmt(c.v)}`} />
+                ))}
+              </div>
             ))}
           </div>
-        ))}
+        </div>
       </div>
       <div className="cal-legend">
         <span>亏</span>
