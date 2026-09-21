@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Brand, ThemeToggle } from './chrome.tsx'
-import { BoxStrip, CalendarHeatmap, CaptureBar, ColorScatter, CoverageMeter, ForestPlot, Histogram, MaeBar, MonthBars, MultiLine, Scatter, SignedBars, type PathMarker } from './charts.tsx'
+import { BoxStrip, CalendarHeatmap, CaptureBar, ColorScatter, CoverageMeter, ForestPlot, Histogram, MaeBar, MonthBars, MultiLine, Scatter, SignedBars, Treemap, type PathMarker } from './charts.tsx'
 import { InsightDrawer, type Insight } from './InsightDrawer.tsx'
 import { PathDrawer } from './PathDrawer.tsx'
-import { AnalysisPage, tripsCsv } from './AnalysisPage.tsx'
+import { AnalysisPage, LayerFold, tripsCsv } from './AnalysisPage.tsx'
 import { HowPage } from './HowPage.tsx'
 import { WhatPage } from './WhatPage.tsx'
 import { WhyLuck } from './ReviewHome.tsx'
@@ -259,8 +259,8 @@ function RegimeMixBar({ checkup }: { checkup: Checkup }) {
   )
 }
 
-function GroupViz(props: { title: string; rows: GroupRow[]; onPick: (row: GroupRow) => void; id?: string }) {
-  const items = props.rows.map((r) => ({
+function groupForestItems(rows: GroupRow[]) {
+  return rows.map((r) => ({
     id: r.id,
     label: r.label,
     value: r.n >= 5 ? r.expectancy : null,
@@ -270,10 +270,65 @@ function GroupViz(props: { title: string; rows: GroupRow[]; onPick: (row: GroupR
     n: r.n,
     dim: r.n < 10,
   }))
+}
+
+/**
+ * 集中度矩形树图:每笔一个矩形,面积 = |已实现盈亏|,颜色 = 盈亏正负。
+ * 最大一笔(TSLA)占满大半,其余缩成边角小块,一眼看出"靠一两单撑起来"——
+ * 面积编码比条形更能表达集中,也避开了一排细条中间全是噪声的问题。数据现算,不碰引擎。
+ */
+function ConcentrationTreemap(props: {
+  trips: Array<{ id: string; symbol: string; realizedPnl: number }>
+  onPick?: (id: string) => void
+}) {
+  const rows = props.trips.filter((t) => Number.isFinite(t.realizedPnl) && t.realizedPnl !== 0)
+  if (rows.length < 2) return null
+  const top = [...rows].sort((a, b) => Math.abs(b.realizedPnl) - Math.abs(a.realizedPnl))[0]
+  const gross = rows.filter((t) => t.realizedPnl > 0).reduce((s, t) => s + t.realizedPnl, 0)
+  const topShare = gross > 0 && top.realizedPnl > 0 ? Math.round((top.realizedPnl / gross) * 100) : null
+  return (
+    <>
+      {/* 只保留结论,去掉"每块=一笔"这类读图说明。 */}
+      {topShare != null ? (
+        <p className="tiny">最大一块({top.symbol})单独占毛利 {topShare}% —— 一块独大就是"靠一两单撑起来"。</p>
+      ) : null}
+      <Treemap
+        height={300}
+        items={rows.map((t) => ({
+          id: t.id,
+          label: t.symbol,
+          value: Math.abs(t.realizedPnl),
+          up: t.realizedPnl >= 0,
+          sub: money(t.realizedPnl),
+        }))}
+        onPick={props.onPick}
+      />
+    </>
+  )
+}
+
+/**
+ * 主因卡内的轻量分组证据:只画森林图,不带 <article>壳/标题/明细表折叠。
+ * 完整版(含明细表)仍在下面切面区的 GroupViz——避免"同一切面完整渲染两次"。
+ */
+function GroupForest(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }) {
+  return (
+    <ForestPlot
+      items={groupForestItems(props.rows)}
+      format={money}
+      onPick={(id) => {
+        const row = props.rows.find((r) => r.id === id)
+        if (row && row.n > 0) props.onPick(row)
+      }}
+    />
+  )
+}
+
+function GroupViz(props: { title: string; rows: GroupRow[]; onPick: (row: GroupRow) => void; id?: string }) {
+  const items = groupForestItems(props.rows)
   return (
     <article className="panel" id={props.id}>
       <h3>{props.title}</h3>
-      <p className="muted">点是单笔期望，须是 80% 区间。穿过 0 = 锁不住正负。n&lt;5 不画；5–9 灰显。点一条打开该组。</p>
       <ForestPlot
         items={items}
         format={money}
@@ -1304,6 +1359,88 @@ export function Dashboard(props: {
         cross={cross}
         diagnoses={diagnoses}
         onEvidence={goEvidence}
+        chartFor={(d) => {
+          // 结论+依据:每张主因卡按 evidenceAnchor 就地内嵌它的主证据图,不跳走。
+          // 只覆盖真会渲染成卡片的锚点(mae / mc / sides);sensitivity、quality 对应的卡
+          // 已被 CONC_IDS/QUALITY_IDS 过滤掉、且无对应图,保持文字深链。
+          const mc = book.analytics.monteCarlo
+          switch (d.evidenceAnchor) {
+            case 'mae':
+              // 浮盈回吐 / 退出捕获:MAE×MFE 散点。数据/交互复用下方 #mae 图。
+              return scatter.length ? (
+                <Scatter
+                  height={220}
+                  points={scatter.map((t) => ({
+                    id: t.id,
+                    x: t.maePct || 0,
+                    y: t.mfePct || 0,
+                    up: t.realizedPnl >= 0,
+                    label: `${t.symbol} · ${money(t.realizedPnl)} · MAE ${t.maePct != null ? pctPlain(t.maePct, 1) : 'N/A'} · MFE ${t.mfePct != null ? pctPlain(t.mfePct, 1) : 'N/A'}`,
+                  }))}
+                  onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
+                />
+              ) : null
+            case 'mc':
+              // 运气类:蒙特卡洛抽样终值分布,标出真实终值位置。取单张终值直方图(完整两张在下方 #mc)。
+              return mc ? (
+                <Histogram
+                  values={mc.terminals}
+                  bins={29}
+                  format={moneyK}
+                  markerValue={mc.realizedTerminal}
+                  markerLabel="你在这里"
+                />
+              ) : null
+            // 分组类卡:卡内只放轻量森林图(GroupForest),完整分组图(带明细表)留在下面切面区,
+            // 不再整组件复用 → 消除"同一切面渲染两次"。
+            case 'sides':
+              return (
+                <GroupForest
+                  rows={book.checkup.sides}
+                  onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+                />
+              )
+            case 'hold':
+              return (
+                <GroupForest
+                  rows={book.checkup.holdBuckets}
+                  onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+                />
+              )
+            case 'weekdays':
+              return (
+                <GroupForest
+                  rows={book.checkup.weekdays}
+                  onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+                />
+              )
+            case 'freq':
+              return (
+                <GroupForest
+                  rows={book.checkup.regimes}
+                  onPick={(row) => openInsight({ kind: 'group', row, trips: book.episodes.filter((t) => t.regime === row.id) })}
+                />
+              )
+            case 'sensitivity':
+              // sensitivity 这个 anchor 被多类诊断共用:集中度(structure-max-win/risk-concentrate)
+              // 和前后半程趋势(trend-*)。只有集中度该配矩形树图;趋势类的数字已在标题里,不画图。
+              // 按 id 精确分发,别按 anchor 一刀切(否则趋势卡会误画同一张 treemap → 重复)。
+              if (d.id !== 'structure-max-win' && d.id !== 'risk-concentrate') return null
+              return (
+                <ConcentrationTreemap
+                  trips={scoped}
+                  onPick={(id) => {
+                    const t = closed.find((x) => x.id === id) || closedAll.find((x) => x.id === id)
+                    if (t) openTrip(t)
+                  }}
+                />
+              )
+            // opp-cost / stop-scan / rule-replay / kelly / psm 的图在「怎么办」页的反事实证据里,
+            // 不在本组件作用域,无法就地内嵌 → 保持文字深链。quality 无图形式,同理。
+            default:
+              return null
+          }
+        }}
       >
         <h2 className="review-sec" id="sec-behavior">交易与行为</h2>
         <div>
@@ -1351,7 +1488,6 @@ export function Dashboard(props: {
           <p className="why-layer-k">证据</p>
           <article className="panel">
             <h3>盈亏贡献</h3>
-            <p className="muted">按股票聚合已实现盈亏，盈利在上、亏损在下。判断盈利是否集中在少数交易。</p>
             <PnLBySymbol trips={scoped} />
           </article>
           <div className="grid-2">
@@ -1447,29 +1583,7 @@ export function Dashboard(props: {
               )}
             </article>
           </div>
-          <article className="panel" style={{ marginTop: 12 }}>
-            <h3>日线估算 MAE × MFE</h3>
-            {scatter.length === 0 ? (
-              <p className="tiny">
-                没有可画的跨日路径。同日往返不计算；缺日线记为缺失。可计算 {p.pathComputable} · 同日排除 {p.pathSameDayExcluded} ·
-                缺行情 {p.pathMissingExcluded}
-              </p>
-            ) : (
-              <>
-                <p className="muted">日线粗估，不知盘中先后。点一下打开路径。横轴越右越不利，纵轴越上越有利。不当精确执行评价。</p>
-                <Scatter
-                  points={scatter.map((t) => ({
-                    id: t.id,
-                    x: t.maePct || 0,
-                    y: t.mfePct || 0,
-                    up: t.realizedPnl >= 0,
-                    label: `${t.symbol} · ${money(t.realizedPnl)} · MAE ${t.maePct != null ? pctPlain(t.maePct, 1) : 'N/A'} · MFE ${t.mfePct != null ? pctPlain(t.mfePct, 1) : 'N/A'}`,
-                  }))}
-                  onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
-                />
-              </>
-            )}
-          </article>
+          {/* 「日线估算 MAE × MFE」散点已在主因卡(浮盈回吐/退出捕获)内就地画,此处删除,避免同图重复。 */}
         <TradeBenchPanel
           rows={tradeBench.rows}
           n={tradeBench.n}
@@ -1479,13 +1593,17 @@ export function Dashboard(props: {
           onOpenTrip={openTrip}
         />
 
+        <p className="why-layer-k">更多切面</p>
+        <LayerFold
+          id="fold-freq"
+          title="持仓与频率"
+          summary="频率构成 · 各频率累计盈亏 · 收益率×持仓时长 · 5 组"
+          anchors={['freq', 'regimes']}
+        >
         <section id="freq" className="freq-block">
-          <h3>频率</h3>
-          <p className="tiny">每类做几笔、各自赚赔、路径长什么样。一次看完。</p>
           <RegimeMixBar checkup={book.checkup} />
           <article className="panel" style={{ marginTop: 24 }}>
             <h3>各频率累计盈亏</h3>
-            <p className="muted">按平仓时间累计,看日内 / 短线 / 波段 / 长线各自到底在赚还是在亏。</p>
             <MultiLine
               height={220}
               baseline={0}
@@ -1515,7 +1633,6 @@ export function Dashboard(props: {
             />
             <article className="panel">
               <h3>收益率 × 持仓时长</h3>
-              <p className="muted">横轴对数持仓天,纵轴单笔收益率,按频率上色。点一个圆看那笔详情。</p>
               <ColorScatter
                 height={240}
                 logX
@@ -1535,7 +1652,14 @@ export function Dashboard(props: {
             </article>
           </div>
         </section>
+        </LayerFold>
 
+        <LayerFold
+          id="fold-behavior"
+          title="行为"
+          summary="开盘盘中尾盘 · 持仓时间 · 多空 · 星期 · 处置效应 · 追高 · 5 组"
+          anchors={['sessions', 'hold', 'sides', 'weekdays']}
+        >
         <div>
           <p className="muted" style={{ marginBottom: 12 }}>
                         行为观察按持仓片段。n&lt;5 只列交易；5–9 探索性；10–29 弱结论；≥30 才谈规律。点一条打开该组。
@@ -1626,8 +1750,15 @@ export function Dashboard(props: {
           </div>
 
         </div>
+        </LayerFold>
 
-          <p className="why-layer-k">明细</p>
+          <p className="why-layer-k">查账</p>
+          <LayerFold
+            id="fold-trips"
+            title="逐笔明细"
+            summary={`${closed.length} 笔往返 · 成交/往返可切换`}
+            anchors={['trips']}
+          >
           <div className="table-hd" id="trips">
             <div className="sorts">
               {(['time', 'pnl', 'r', 'hold'] as const).map((k) => (
@@ -1750,6 +1881,7 @@ export function Dashboard(props: {
             ) : null}
             </>
           )}
+          </LayerFold>
         </div>
 
           <WhyLuck
@@ -1765,6 +1897,14 @@ export function Dashboard(props: {
             }
             cleared={cover.cleared}
           />
+          <LayerFold
+            id="fold-luck"
+            title="运气检验"
+            summary="蒙特卡洛 · 单笔盈亏分布 · 敏感性"
+            // luck-zone 结论条渲染在本折叠区之上、之外。仍把它登记为本区锚点是有意的:
+            // 点侧栏「实力还是运气」时,顺带展开下面的运气检验证据,实现"结论+依据一次到位"。
+            anchors={['sec-checks', 'mc', 'sensitivity', 'luck-zone']}
+          >
           <h2 className="review-sec" id="sec-checks">
             检验
           </h2>
@@ -1793,14 +1933,7 @@ export function Dashboard(props: {
                         ⓘ
                       </span>
                     </p>
-                    <h4 className="tiny" style={{ margin: '12px 0 4px' }}>抽样终值（可变，因为有放回）</h4>
-                    <Histogram
-                      values={mc.terminals}
-                      bins={29}
-                      format={moneyK}
-                      markerValue={mc.realizedTerminal}
-                      markerLabel="你在这里"
-                    />
+                    {/* 抽样终值直方图已在主因卡(运气类)内就地画,此处不重复;只保留独有的回撤分布。 */}
                     <h4 className="tiny" style={{ margin: '16px 0 4px' }}>交易序列最大回撤（路径风险）</h4>
                     <Histogram
                       values={mc.maxDDs.map((v) => -v)}
@@ -1839,37 +1972,7 @@ export function Dashboard(props: {
             )}
           </article>
 
-          <article className="panel">
-            <h3>单笔盈亏分布</h3>
-            <p className="muted">箱=中间一半的交易,竖线=中位,点=每一笔;极端单笔钉在两端做角标,不拉伸主体。</p>
-            {(() => {
-              const closed = book.episodes.filter((t) => t.status === 'closed')
-              if (closed.length < 4) return <p className="tiny">样本太少,不画分布。</p>
-              const s = p.tradeShape
-              const shape =
-                s.skew != null && s.skew > 0.5
-                  ? '你的盈亏是「多数小额 + 少数大赢」的形状'
-                  : s.skew != null && s.skew < -0.5
-                    ? '你的盈亏是「多数小赢 + 偶发巨亏」的形状'
-                    : '你的盈亏大致对称'
-              const fat = s.kurtosis != null && s.kurtosis > 3 ? ',尾部偏肥 —— 极端单笔比常态更常出现' : ''
-              return (
-                <>
-                  <p className="verdict">
-                    {shape}
-                    {fat}。最惨的 5% 交易,平均每笔亏 {s.cvar95 == null ? '—' : moneyAbs(s.cvar95)}。
-                  </p>
-                  <BoxStrip values={closed.map((t) => t.realizedPnl)} format={moneyK} />
-                  <p className="tiny">
-                    红点=亏损单、绿点=盈利单。偏度 {s.skew?.toFixed(1) ?? '—'} · 超额峰度 {s.kurtosis?.toFixed(1) ?? '—'} · 最差 5%
-                    门槛 {s.var95 == null ? '—' : money(s.var95)}。
-                  </p>
-                  <p className="tiny">{book.analytics.runs.note}</p>
-                </>
-              )
-            })()}
-          </article>
-
+          {/* 「单笔盈亏分布」图与「是什么」页 #pnl-swarm 重复,已删;其判词+游程结论已并入该处。 */}
           <article className="panel" id="sensitivity">
             <h3>敏感性:结果稳不稳</h3>
             <p className="muted">{book.sensitivity.note}</p>
@@ -1894,13 +1997,8 @@ export function Dashboard(props: {
               return (
                 <>
                   <p className="verdict">{concVerdict}</p>
-                  {conc != null ? (
-                    <div style={{ marginTop: 4 }}>
-                      <CoverageMeter label="最大一笔占毛利" value={conc} />
-                      {sv.top3Share != null ? <CoverageMeter label="前 3 笔" value={sv.top3Share} /> : null}
-                      {sv.top5Share != null ? <CoverageMeter label="前 5 笔" value={sv.top5Share} /> : null}
-                    </div>
-                  ) : null}
+                  {/* 集中度可视化(帕累托曲线)已上提到「结构」区的集中度卡内,此处不再重复画,
+                      只保留本区独有的结论文字:集中度判词 + 前后半程 + 成本敏感。 */}
                   {h1 != null && h2 != null ? (
                     <p className="tiny">
                       分两半看:前半 {money(h1)} → 后半 {money(h2)}({h2 > h1 ? '在变好' : h2 < h1 ? '在变差' : '基本持平'})。
@@ -1969,6 +2067,7 @@ export function Dashboard(props: {
             </table>
             </details>
           </article>
+          </LayerFold>
         <details className="fold-block ledger-fold" id="sec-ledger">
           <summary>核算 · 对账与覆盖（与「是什么 · 可信吗」同源）</summary>
         <article className="panel" id="equity">

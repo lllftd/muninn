@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { money, pct } from '../lib/format.ts'
+import { money, moneyAbs, pct } from '../lib/format.ts'
 import type { CoverGap, CoverReport } from '../engine/cover.ts'
 import { formatBe, waterfallOf } from '../engine/cover.ts'
 import type { Book, RoundTrip } from '../types.ts'
@@ -127,7 +127,6 @@ export function WhatPage(props: {
 
       <article className="panel wide" id="trade-bars">
         <h3>逐笔盈亏 · 按时间</h3>
-        <p className="tiny">每根一笔,按平仓时间排;绿盈红亏,越高金额越大。点一根跳到明细。</p>
         <TimePnlBars
           points={props.trips
             .filter((t) => t.closeTime)
@@ -146,19 +145,35 @@ export function WhatPage(props: {
 
       <article className="panel wide" id="pnl-swarm">
         <h3>逐笔盈亏 · 按金额分布</h3>
-        <p className="tiny">箱=中间一半的交易,竖线=中位,点=每一笔;两端极端单笔钉成角标,不拉伸主体。点一颗跳到明细。</p>
+        {(() => {
+          // 分布形状判词 + 游程结论,原在「为什么·运气检验」区,与这张分布图重复,合并到此。
+          const s = p.tradeShape
+          const shape =
+            s.skew != null && s.skew > 0.5
+              ? '你的盈亏是「多数小额 + 少数大赢」的形状'
+              : s.skew != null && s.skew < -0.5
+                ? '你的盈亏是「多数小赢 + 偶发巨亏」的形状'
+                : '你的盈亏大致对称'
+          const fat = s.kurtosis != null && s.kurtosis > 3 ? '，尾部偏肥 —— 极端单笔比常态更常出现' : ''
+          return (
+            <p className="verdict">
+              {shape}
+              {fat}。最惨的 5% 交易，平均每笔亏 {s.cvar95 == null ? '—' : moneyAbs(s.cvar95)}。
+            </p>
+          )
+        })()}
         <BoxStrip
           points={props.trips.map((t) => ({ id: t.id, v: t.realizedPnl, label: `${t.symbol} · ${money(t.realizedPnl)}` }))}
           format={money}
           height={150}
           onPick={props.onPickTrip}
         />
+        {book.analytics.runs.note ? <p className="tiny">{book.analytics.runs.note}</p> : null}
       </article>
 
       <div className="grid-2 even">
       <article className="panel">
         <h3>盈亏怎么来的</h3>
-        <p className="tiny">{wf.feeNote || '毛盈亏加总到已实现；未实现与勾稽接到累计净额。'}</p>
         <WaterfallFlow steps={wf.steps} format={money} />
       </article>
 
@@ -172,7 +187,6 @@ export function WhatPage(props: {
             ⓘ
           </span>
         </div>
-        <p className="tiny">点是估计，须是区间。须穿过 0 线 = 还锁不住正负。</p>
         <ForestPlot
           items={[
             {

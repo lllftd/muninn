@@ -2015,6 +2015,129 @@ export function Waterfall(props: {
   )
 }
 
+type TreeItem = { id: string; label: string; value: number; up: boolean; sub?: string }
+type TreeRect = TreeItem & { x: number; y: number; w: number; h: number }
+
+/**
+ * Squarified treemap 布局。面积 ∝ value(已按 |盈亏| 传入),尽量让矩形接近正方形。
+ * 参考 Bruls et al. 2000 的 squarify 算法,纯计算不引库。
+ */
+function squarify(items: TreeItem[], x: number, y: number, w: number, h: number): TreeRect[] {
+  const total = items.reduce((s, it) => s + it.value, 0)
+  if (total <= 0 || items.length === 0) return []
+  const scale = (w * h) / total
+  const scaled = items.map((it) => ({ it, area: it.value * scale }))
+  const out: TreeRect[] = []
+  let rest = scaled
+  let rx = x
+  let ry = y
+  let rw = w
+  let rh = h
+  const worst = (row: number[], side: number) => {
+    const sum = row.reduce((s, a) => s + a, 0)
+    const max = Math.max(...row)
+    const min = Math.min(...row)
+    const s2 = sum * sum
+    const side2 = side * side
+    return Math.max((side2 * max) / s2, s2 / (side2 * min))
+  }
+  while (rest.length) {
+    const vertical = rw < rh
+    const side = vertical ? rw : rh
+    const row: typeof rest = []
+    const areas: number[] = []
+    let i = 0
+    for (; i < rest.length; i++) {
+      const next = areas.concat(rest[i].area)
+      if (row.length && worst(areas, side) < worst(next, side)) break
+      areas.push(rest[i].area)
+      row.push(rest[i])
+    }
+    const rowArea = areas.reduce((s, a) => s + a, 0)
+    const thick = rowArea / side
+    let along = vertical ? rx : ry
+    for (const cell of row) {
+      const len = cell.area / thick
+      if (vertical) {
+        out.push({ ...cell.it, x: along, y: ry, w: len, h: thick })
+      } else {
+        out.push({ ...cell.it, x: rx, y: along, w: thick, h: len })
+      }
+      along += len
+    }
+    if (vertical) {
+      ry += thick
+      rh -= thick
+    } else {
+      rx += thick
+      rw -= thick
+    }
+    rest = rest.slice(row.length)
+  }
+  return out
+}
+
+/**
+ * 矩形树图:每项一个矩形,面积编码大小、颜色编码盈亏正负。
+ * 适合表达"极度集中"——最大一笔占满大半,其余缩成边角小块,一眼可见。
+ */
+export function Treemap(props: {
+  items: TreeItem[]
+  height?: number
+  onPick?: (id: string) => void
+}) {
+  const [hover, setHover] = useState<string | null>(null)
+  const w = 640
+  const h = props.height ?? 320
+  const items = props.items.filter((it) => it.value > 0).sort((a, b) => b.value - a.value)
+  if (!items.length) return <p className="tiny">没有可画的数据。</p>
+  const rects = squarify(items, 0, 0, w, h)
+  const maxV = items[0].value
+  const active = rects.find((r) => r.id === hover) ?? null
+  return (
+    <div className="treemap-wrap">
+      <svg viewBox={`0 0 ${w} ${h}`} className="treemap" preserveAspectRatio="none" role="img">
+        {rects.map((r) => {
+          // 颜色越深 = 该笔越大,和参考热力图一致。
+          const strength = 0.35 + 0.6 * (r.value / maxV)
+          const showLabel = r.w > 46 && r.h > 24
+          return (
+            <g
+              key={r.id}
+              onMouseEnter={() => setHover(r.id)}
+              onMouseLeave={() => setHover((v) => (v === r.id ? null : v))}
+              onClick={() => props.onPick?.(r.id)}
+              style={{ cursor: props.onPick ? 'pointer' : 'default' }}
+            >
+              <rect
+                x={r.x + 0.5}
+                y={r.y + 0.5}
+                width={Math.max(0, r.w - 1)}
+                height={Math.max(0, r.h - 1)}
+                fill={r.up ? 'var(--up)' : 'var(--down)'}
+                fillOpacity={strength}
+                stroke="var(--bg)"
+                strokeWidth={1}
+              />
+              {showLabel ? (
+                <text x={r.x + 7} y={r.y + 18} className="treemap-label" fill="#fff">
+                  {r.label}
+                </text>
+              ) : null}
+            </g>
+          )
+        })}
+      </svg>
+      {active ? (
+        <div className="treemap-tip">
+          <b>{active.label}</b>
+          {active.sub ? <span>{active.sub}</span> : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function MixStack(props: { win: number; loss: number; long?: number; short?: number }) {
   const [mode, setMode] = useState<'result' | 'side'>('result')
   const sideOk = props.long != null && props.short != null && props.long + props.short > 0

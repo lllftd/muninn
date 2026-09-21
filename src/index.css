@@ -728,9 +728,9 @@ button.stat:hover, .stat.clickable:hover { border-color: var(--gold); }
 }
 .obs-line {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   text-align: left;
   background: var(--panel2);
@@ -741,7 +741,19 @@ button.stat:hover, .stat.clickable:hover { border-color: var(--gold); }
   color: var(--t2);
   opacity: 0.72;
 }
+.obs-item.open .obs-line { opacity: 1; border-radius: 8px 8px 0 0; }
 .obs-line b { color: var(--t1); font-weight: 600; }
+/* 低置信观察展开区:图 + 薄样本警告,就地不跳走。 */
+.obs-evidence {
+  background: var(--panel2);
+  border-radius: 0 0 8px 8px;
+  padding: 4px 12px 12px;
+  margin-top: -2px;
+}
+.obs-warn {
+  margin: 0 0 8px;
+  color: var(--warn-text);
+}
 .improve-list {
   list-style: none;
   margin: 0 0 16px;
@@ -1767,6 +1779,59 @@ button.vchip { cursor: pointer; }
 .diag-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 .diag-card.tone-highlight { border-color: var(--up); }
 .diag-card.conf-low { opacity: 0.92; }
+/* 主因卡「→ 建议」行:结论下方直给可执行建议。 */
+.diag-next {
+  margin: 8px 0 2px !important;
+  color: var(--t1);
+  font-weight: 550;
+  font-size: 13.5px;
+}
+/* 卡内「依据 ▾」折叠按钮 + 就地依据区(证据就地,不跳走)。 */
+.diag-fold-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  color: var(--t2);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.diag-fold-btn:hover { color: var(--t1); }
+.diag-evidence {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--line2);
+  background: var(--panel2);
+  border-radius: 0 8px 8px 0;
+}
+.diag-evidence .tiny { margin: 0 0 6px; }
+.diag-chart { margin: 4px 0 8px; }
+.diag-chart svg { max-width: 100%; height: auto; display: block; }
+.conc-meters { display: grid; gap: 6px; margin: 4px 0 6px; }
+/* 集中度矩形树图 */
+.treemap-wrap { position: relative; margin: 4px 0 6px; }
+.treemap { width: 100%; height: auto; display: block; border-radius: 6px; overflow: hidden; }
+.treemap-label { font-size: 12px; font-weight: 650; pointer-events: none; }
+.treemap-tip {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+.treemap-tip b { color: var(--t1); }
+.treemap-tip span { color: var(--t2); font-variant-numeric: tabular-nums; }
 .analysis-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1820,13 +1885,15 @@ button.vchip { cursor: pointer; }
   gap: 2px;
   padding: 2px 0 24px;
 }
+/* 顶级导航项:层级低于组标题,字号中等。 */
 .why-toc button {
   text-align: left;
   background: none;
   border: 0;
-  color: var(--t3);
+  color: var(--t2);
   font-size: 13px;
-  line-height: 1.35;
+  font-weight: 550;
+  line-height: 1.3;
   padding: 6px 8px;
   cursor: pointer;
   border-radius: 8px;
@@ -1836,9 +1903,12 @@ button.vchip { cursor: pointer; }
   color: var(--t1);
   background: var(--panel2);
 }
+/* 子项:最小 + 缩进 + 弱化,一眼看出从属。 */
 .why-toc button.sub {
-  padding-left: 18px;
-  font-size: 12px;
+  padding-left: 22px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--t3);
 }
 .why-layer-k {
   margin: 18px 0 8px;
@@ -1847,6 +1917,58 @@ button.vchip { cursor: pointer; }
   color: var(--t3);
   font-weight: 650;
 }
+
+/* 侧栏 TOC 分组:结论 / 切面 / 查账。组标题是父级分类,字号最大最重,统领下面的导航项。 */
+.toc-group { display: flex; flex-direction: column; gap: 2px; }
+.toc-group + .toc-group { margin-top: 22px; }
+.toc-group-hd {
+  margin: 0 0 8px;
+  padding: 0 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--t1);
+}
+
+/* L1/L2 折叠层。折叠态也带摘要,标题栏可点开合。折叠 ≠ 删除。 */
+.layer-fold {
+  margin: 20px 0 0;
+  border-top: 1px solid var(--line);
+  padding-top: 4px;
+}
+.layer-fold-hd {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 12px 4px;
+  color: var(--t1);
+}
+.layer-fold-hd:hover { color: var(--t1); }
+.layer-fold-hd:hover .layer-fold-sum { color: var(--t2); }
+.layer-caret {
+  color: var(--t3);
+  font-size: 12px;
+  transition: transform 0.15s ease;
+  transform: rotate(0deg);
+  flex: none;
+}
+.layer-caret.down { transform: rotate(90deg); }
+.layer-fold-title {
+  font-size: 15px;
+  font-weight: 650;
+  flex: none;
+}
+.layer-fold-sum {
+  font-size: 12px;
+  color: var(--t3);
+  font-weight: 400;
+  line-height: 1.4;
+}
+.layer-fold-body { padding-top: 4px; }
 .metric-strip {
   display: flex;
   flex-wrap: wrap;
