@@ -216,16 +216,22 @@ export function waterfallOf(book: Book) {
     { id: 'win', label: '毛盈利', delta: grossWin },
     { id: 'loss', label: '毛亏损', delta: grossLoss },
   ]
-  if (p.unrealizedPnl != null) {
+  if (p.unrealizedPnl != null && Math.abs(p.unrealizedPnl) > 1e-6) {
     steps.push({ id: 'unreal', label: '未实现', delta: p.unrealizedPnl })
-    steps.push({ id: 'recon', label: '勾稽', delta: p.reconDifference })
+  }
+  // 关键:末柱必须落在 hero 同一个 netPnl 上。中间步骤之和与 netPnl 的差,
+  // 显式补成一根"分红/费用等"调节柱,而不是让末柱自己漂走 —— 保证瀑布自洽、终点=页面头条。
+  const runBeforeNet = steps.reduce((s, x) => s + x.delta, 0)
+  const plug = p.netPnl - runBeforeNet
+  if (Math.abs(plug) > 1) {
+    steps.push({ id: 'recon', label: '分红/费用等', delta: plug })
   }
   steps.push({ id: 'net', label: '净盈亏', delta: p.netPnl, total: true })
   return {
     steps,
     feeNote: p.feeDrag
-      ? `已实现已含费用 ${money(-Math.abs(p.feeDrag))}，瀑布不再扣一次。最后一根是累计净盈亏。`
-      : '毛盈亏接到未实现与勾稽，最后一根是累计净盈亏。',
+      ? `已实现已含费用 ${money(-Math.abs(p.feeDrag))}，瀑布不再重复扣。最后一根 = 各段累加 = 页面头部的净盈亏。`
+      : '毛盈亏加未实现,再补上分红/费用等未直接入账项,累加到最后一根 = 页面头部的净盈亏。',
   }
 }
 

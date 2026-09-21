@@ -3,7 +3,7 @@ import { money } from '../lib/format.ts'
 import type { CrossReport } from '../engine/cross.ts'
 import type { Diagnosis } from '../engine/diagnose.ts'
 import type { GroupRow } from '../types.ts'
-import { DEFAULT_PRO_PREFS, type ProPrefs } from '../lib/proPrefs.ts'
+import { type ProPrefs } from '../lib/proPrefs.ts'
 import { WhyDiagnoses } from './ReviewHome.tsx'
 
 function CrossTable(props: { title: string; rows: GroupRow[] }) {
@@ -131,7 +131,6 @@ export function AnalysisPage(props: {
     return () => obs.disconnect()
   }, [toc])
 
-  const { prefs } = props
   const crossOk = props.cross.symbolHold.some((r) => r.n >= 5) || props.cross.weekdayRegime.some((r) => r.n >= 5)
   return (
     <div className="analysis-page">
@@ -148,45 +147,6 @@ export function AnalysisPage(props: {
         ))}
       </nav>
       <div className="analysis-main">
-        <div className="analysis-toolbar print-hide">
-          <label>
-            样本量门槛 n≥
-            <input
-              type="number"
-              min={5}
-              max={80}
-              value={prefs.minN}
-              onChange={(e) => props.onPrefs({ ...prefs, minN: Number(e.target.value) || DEFAULT_PRO_PREFS.minN })}
-            />
-          </label>
-          <label>
-            分组 n≥
-            <input
-              type="number"
-              min={5}
-              max={40}
-              value={prefs.minGroupN}
-              onChange={(e) => props.onPrefs({ ...prefs, minGroupN: Number(e.target.value) || DEFAULT_PRO_PREFS.minGroupN })}
-            />
-          </label>
-          <label>
-            集中度
-            <input
-              type="number"
-              min={15}
-              max={90}
-              value={Math.round(prefs.concentration * 100)}
-              onChange={(e) =>
-                props.onPrefs({ ...prefs, concentration: (Number(e.target.value) || 40) / 100 })
-              }
-            />
-            %
-          </label>
-          <button type="button" className="ghost sm" onClick={props.onExportCsv}>
-            导出往返 CSV
-          </button>
-        </div>
-
         <WhyDiagnoses diagnoses={props.diagnoses} onEvidence={props.onEvidence} />
         <section className="analysis-block" id="cross">
           <h2 className="review-sec">交叉归因</h2>

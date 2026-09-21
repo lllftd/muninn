@@ -3,7 +3,7 @@ import { money, pct } from '../lib/format.ts'
 import type { CoverGap, CoverReport } from '../engine/cover.ts'
 import { formatBe, waterfallOf } from '../engine/cover.ts'
 import type { Book, RoundTrip } from '../types.ts'
-import { ForestPlot, PnlSwarm, TimePnlBars, Waterfall, signedBound } from './charts.tsx'
+import { BoxStrip, ForestPlot, TimePnlBars, WaterfallFlow } from './charts.tsx'
 
 export function CapabilityMatrix(props: {
   gaps: CoverGap[]
@@ -69,7 +69,17 @@ export function WhatPage(props: {
   const longs = props.trips.filter((t) => t.side === 'long').length
   const shorts = props.trips.filter((t) => t.side === 'short').length
   const be = cover.be ? formatBe(cover.be) : null
-  const bound = signedBound(props.trips.map((t) => t.realizedPnl))
+  // 时间柱用稳健量程(Tukey 上须),让多数小额单可见、极端单笔钳顶带溢出三角;不用整段极值当轴。
+  const pnls = [...props.trips.map((t) => t.realizedPnl)].sort((a, b) => a - b)
+  const qAt = (q: number) => {
+    if (!pnls.length) return 0
+    const i = (pnls.length - 1) * q
+    const lo = Math.floor(i)
+    const hi = Math.ceil(i)
+    return lo === hi ? pnls[lo] : pnls[lo] * (hi - i) + pnls[hi] * (i - lo)
+  }
+  const iqr = qAt(0.75) - qAt(0.25)
+  const bound = Math.max(Math.abs(qAt(0.25) - 1.5 * iqr), Math.abs(qAt(0.75) + 1.5 * iqr), 1)
   return (
     <div className="what-page print-section" id="cover">
       <section className="cover-verdict">
@@ -116,8 +126,8 @@ export function WhatPage(props: {
       </article>
 
       <article className="panel wide" id="trade-bars">
-        <h3>逐笔盈亏</h3>
-        <p className="tiny">上图只看什么时候成交，下图看金额怎么堆。点一根或一颗跳到明细。</p>
+        <h3>逐笔盈亏 · 按时间</h3>
+        <p className="tiny">每根一笔,按平仓时间排;绿盈红亏,越高金额越大。点一根跳到明细。</p>
         <TimePnlBars
           points={props.trips
             .filter((t) => t.closeTime)
@@ -128,27 +138,28 @@ export function WhatPage(props: {
               label: `${t.symbol} · ${money(t.realizedPnl)}`,
             }))}
           bound={bound}
+          height={160}
           format={money}
           onPick={props.onPickTrip}
         />
-        <div id="pnl-swarm">
-          <PnlSwarm
-            points={props.trips.map((t) => ({
-              id: t.id,
-              v: t.realizedPnl,
-              label: `${t.symbol} · ${money(t.realizedPnl)}`,
-            }))}
-            bound={bound}
-            format={money}
-            onPick={props.onPickTrip}
-          />
-        </div>
       </article>
 
-      <article className="panel wide">
+      <article className="panel wide" id="pnl-swarm">
+        <h3>逐笔盈亏 · 按金额分布</h3>
+        <p className="tiny">箱=中间一半的交易,竖线=中位,点=每一笔;两端极端单笔钉成角标,不拉伸主体。点一颗跳到明细。</p>
+        <BoxStrip
+          points={props.trips.map((t) => ({ id: t.id, v: t.realizedPnl, label: `${t.symbol} · ${money(t.realizedPnl)}` }))}
+          format={money}
+          height={150}
+          onPick={props.onPickTrip}
+        />
+      </article>
+
+      <div className="grid-2 even">
+      <article className="panel">
         <h3>盈亏怎么来的</h3>
         <p className="tiny">{wf.feeNote || '毛盈亏加总到已实现；未实现与勾稽接到累计净额。'}</p>
-        <Waterfall steps={wf.steps} format={money} />
+        <WaterfallFlow steps={wf.steps} format={money} />
       </article>
 
       <article className="panel" id="forest">
@@ -198,6 +209,7 @@ export function WhatPage(props: {
           format={money}
         />
       </article>
+      </div>
 
       <article className="panel" id="health">
         <div className="drawer-k">可信吗</div>

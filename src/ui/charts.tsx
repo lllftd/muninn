@@ -854,7 +854,9 @@ export function ForestPlot(props: {
                   title={rawLo != null && rawHi != null ? `${fmt(rawLo)} 至 ${fmt(rawHi)}` : undefined}
                   style={{
                     left: xPct(mid),
-                    width: `max(8px, calc(${xPct(hi)} - ${xPct(lo)}))`,
+                    // 极窄区间(如全是 -$4~-$6 的小额单)在宽轴上只有 1-2px,会被圆点吞掉;
+                    // 给一个 22px 地板宽,让端帽露出圆点之外,读成"区间很紧",而不是"没有须"。
+                    width: `max(22px, calc(${xPct(hi)} - ${xPct(lo)}))`,
                   }}
                 />
               ) : null}
@@ -1185,10 +1187,20 @@ function beeswarmOffsets(
  * 箱线 + 散点:箱=中间 50%(Q1–Q3),竖线=中位,须=正常范围,每笔一个点。
  * 极端离群值不拉伸坐标轴,而是钉在两端做成"‹N / N›"角标 —— 抗离群、信息量高。
  */
-export function BoxStrip(props: { values: number[]; format?: (v: number) => string; height?: number }) {
+export function BoxStrip(props: {
+  values?: number[]
+  points?: Array<{ id: string; v: number; label?: string }>
+  format?: (v: number) => string
+  height?: number
+  onPick?: (id: string) => void
+}) {
   const plotRef = useRef<HTMLDivElement>(null)
   const [plotW, setPlotW] = useState(0)
-  const xs = props.values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
+  // 支持两种入参:纯数值 or 带 id 的点(带 id 才能点击跳明细)。统一排序后保留 id 关联。
+  const pts = (props.points ?? (props.values ?? []).map((v, i) => ({ id: String(i), v, label: undefined })))
+    .filter((p) => Number.isFinite(p.v))
+    .sort((a, b) => a.v - b.v)
+  const xs = pts.map((p) => p.v)
   const hasPlot = xs.length >= 4
   useLayoutEffect(() => {
     if (!hasPlot) return
@@ -1224,7 +1236,8 @@ export function BoxStrip(props: { values: number[]; format?: (v: number) => stri
   const at = (v: number) => P + ((Math.max(domLo, Math.min(domHi, v)) - domLo) / dom) * (100 - 2 * P)
   const outLo = xs.filter((v) => v < domLo).length
   const outHi = xs.filter((v) => v > domHi).length
-  const visible = xs.filter((v) => v >= domLo && v <= domHi)
+  const visiblePts = pts.filter((p) => p.v >= domLo && p.v <= domHi)
+  const visible = visiblePts.map((p) => p.v)
   const swarmY = beeswarmOffsets(visible, at, plotW, 4, 38)
   const zeroIn = 0 >= domLo && 0 <= domHi
   return (
@@ -1236,14 +1249,16 @@ export function BoxStrip(props: { values: number[]; format?: (v: number) => stri
         <span className="bx-cap" style={{ left: `${at(wHi)}%` }} />
         <span className="bx-box" style={{ left: `${at(q1)}%`, width: `${Math.max(0.5, at(q3) - at(q1))}%` }} />
         <span className="bx-med" style={{ left: `${at(med)}%` }} title={`中位 ${fmt(med)}`} />
-        {visible.map((v, i) => (
-          <span
-            key={i}
-            className={`bx-dot ${v >= 0 ? 'up' : 'down'}`}
-            style={{ left: `${at(v)}%`, top: `calc(50% + ${swarmY[i] ?? 0}px)` }}
-            title={fmt(v)}
-          />
-        ))}
+        {visiblePts.map((pt, i) => {
+          const style = { left: `${at(pt.v)}%`, top: `calc(50% + ${swarmY[i] ?? 0}px)` }
+          const cls = `bx-dot ${pt.v >= 0 ? 'up' : 'down'}`
+          const title = pt.label || fmt(pt.v)
+          return props.onPick ? (
+            <button key={pt.id} type="button" className={cls} style={style} title={title} onClick={() => props.onPick?.(pt.id)} />
+          ) : (
+            <span key={pt.id} className={cls} style={style} title={title} />
+          )
+        })}
         {outLo ? (
           <span className="bx-out left" title={`${outLo} 笔比 ${fmt(domLo)} 还差(最极端 ${fmt(xs[0])})`}>
             ‹ {outLo} 个极端
@@ -1634,13 +1649,29 @@ export function PnlSwarm(props: {
   if (!rows.length) return null
   const fmt = props.format ?? money
   const sorted = [...rows].sort((a, b) => a.v - b.v || a.id.localeCompare(b.id))
-  const bound = props.bound ?? signedBound(sorted.map((p) => p.v))
+  // 蜂群用 Tukey 上须(Q3+1.5·IQR 的绝对值)当稳健量程:主体铺满宽度、不挤成一坨,
+  // 只有真正离群的极端单笔(如 ±$6k)才钳到边缘并单独标注。比"绝对值分位"更抗"多数都是小额"的场景。
+  const qOf = (arr: number[], q: number) => {
+    if (!arr.length) return 0
+    const i = (arr.length - 1) * q
+    const loI = Math.floor(i)
+    const hiI = Math.ceil(i)
+    return loI === hiI ? arr[loI] : arr[loI] * (hiI - i) + arr[hiI] * (i - loI)
+  }
+  const asc = sorted.map((p) => p.v)
+  const q1 = qOf(asc, 0.25)
+  const q3 = qOf(asc, 0.75)
+  const iqr = q3 - q1
+  const fence = Math.max(Math.abs(q1 - 1.5 * iqr), Math.abs(q3 + 1.5 * iqr))
+  const bound = Math.max(fence, 1)
   const padAmt = bound * 0.06
   const lo = -bound - padAmt
   const hi = bound + padAmt
   const span = hi - lo || 1
-  const at = (v: number) => ((v - lo) / span) * 100
-  const r = 4.5
+  const at = (v: number) => ((Math.max(lo, Math.min(hi, v)) - lo) / span) * 100
+  const outLo = sorted.filter((p) => p.v < lo)
+  const outHi = sorted.filter((p) => p.v > hi)
+  const r = 4
   const pitch = r * 2 + 2
   const maxRings = expanded ? 7 : 4
   const packed = beeswarmPack(
@@ -1682,25 +1713,8 @@ export function PnlSwarm(props: {
     })
   })()
   const cloudH = Math.max(placedH, ...clusters.map((c) => Math.abs(c.y)))
-  const stageH = Math.max(72, cloudH * 2 + 24)
+  const stageH = Math.min(150, Math.max(72, cloudH * 2 + 24)) // 限高,不让密集堆叠拉出一根柱
   const ticks = [-bound, 0, bound]
-  const isolateCut = span * 0.1
-  const labels: Array<{ id: string; text: string; left: string; y: number; pct: number }> = []
-  const tryLabel = (i: number, kind: 'win' | 'loss') => {
-    const p = sorted[i]
-    const nb = kind === 'win' ? sorted[i - 1] : sorted[i + 1]
-    if (!p || !nb || packed.ys[i] == null) return
-    if (Math.abs(p.v - nb.v) < isolateCut) return
-    labels.push({
-      id: p.id,
-      text: kind === 'win' ? `独赢 ${fmt(p.v)}` : `独亏 ${fmt(p.v)}`,
-      left: `calc(${at(p.v)}% + ${packed.dx[i] ?? 0}px)`,
-      y: packed.ys[i]!,
-      pct: at(p.v),
-    })
-  }
-  tryLabel(0, 'loss')
-  tryLabel(sorted.length - 1, 'win')
 
   return (
     <div className="swarm">
@@ -1745,15 +1759,16 @@ export function PnlSwarm(props: {
             收起
           </button>
         ) : null}
-        {labels.map((lab) => (
-          <span
-            key={`l-${lab.id}`}
-            className={`swarm-lbl${lab.pct > 78 ? ' end' : lab.pct < 12 ? ' start' : ''}`}
-            style={{ left: lab.left, top: `calc(50% + ${lab.y}px)` }}
-          >
-            {lab.text}
+        {outLo.length ? (
+          <span className="swarm-out start" title={outLo.map((p) => p.label || fmt(p.v)).join('\n')}>
+            ‹ {outLo.length} 笔更亏 · 最惨 {fmt(Math.min(...outLo.map((p) => p.v)))}
           </span>
-        ))}
+        ) : null}
+        {outHi.length ? (
+          <span className="swarm-out end" title={outHi.map((p) => p.label || fmt(p.v)).join('\n')}>
+            {outHi.length} 笔更赚 · 最高 {fmt(Math.max(...outHi.map((p) => p.v)))} ›
+          </span>
+        ) : null}
       </div>
       <div className="swarm-axis" aria-hidden>
         {ticks.map((t) => (
@@ -1782,18 +1797,19 @@ export function TimePnlBars(props: {
   const innerH = h - pad.t - pad.b
   const tMin = rows[0].t
   const tMax = rows[rows.length - 1].t
-  const spanT = Math.max(tMax - tMin, 86400000)
   const maxAbs = props.bound ?? signedBound(rows.map((p) => p.v))
   const yPx = (v: number) => pad.t + (1 - (v + maxAbs) / (2 * maxAbs)) * innerH
   const zero = yPx(0)
-  const xAt = (t: number) => pad.l + ((t - tMin) / spanT) * innerW
-  const bw = Math.max(2, Math.min(8, (innerW / Math.max(rows.length, 1)) * 0.55))
+  // 等距序列排布:每笔一个槽,按平仓时间先后排,不按真实时间距离 —— 密集期不再叠、稀疏期不再空。
+  const slot = innerW / Math.max(rows.length, 1)
+  const xAt = (i: number) => pad.l + (i + 0.5) * slot
+  const bw = Math.max(2, Math.min(10, slot * 0.62))
   const fmt = props.format ?? money
   const ticks = [-maxAbs, 0, maxAbs]
   const L = (x: number) => `${(x / w) * 100}%`
   const T = (y: number) => `${(y / h) * 100}%`
   return (
-    <div className="svg-wrap spark">
+    <div className="svg-wrap spark" style={{ height: h }}>
       <svg viewBox={`0 0 ${w} ${h}`} className="chart vbars spark" preserveAspectRatio="none">
         {ticks.map((t) => (
           <line
@@ -1805,8 +1821,8 @@ export function TimePnlBars(props: {
             className={Math.abs(t) < 1e-9 ? 'base-line' : 'grid'}
           />
         ))}
-        {rows.map((p) => {
-          const x = xAt(p.t) - bw / 2
+        {rows.map((p, i) => {
+          const x = xAt(i) - bw / 2
           const clipped = Math.max(-maxAbs, Math.min(maxAbs, p.v))
           const overflow = Math.abs(p.v) > maxAbs + 1e-6
           const y = Math.min(yPx(clipped), zero)
@@ -1855,13 +1871,46 @@ export function TimePnlBars(props: {
             {fmt(t)}
           </span>
         ))}
-        <span style={{ left: L(pad.l), top: T(h - 8), transform: 'translateY(-50%)' }}>
+        <span style={{ left: L(xAt(0)), top: T(h - 8), transform: 'translate(-50%,-50%)' }}>
           {etDateKey(new Date(tMin)).slice(5)}
         </span>
-        <span style={{ left: L(w - pad.r), top: T(h - 8), transform: 'translate(-100%,-50%)' }}>
+        <span style={{ left: L(xAt(rows.length - 1)), top: T(h - 8), transform: 'translate(-50%,-50%)' }}>
           {etDateKey(new Date(tMax)).slice(5)}
         </span>
       </div>
+    </div>
+  )
+}
+
+// ---- 盈亏台账:右对齐数字 + 小计分隔线。对"某一项(如未实现)碾压其余"的极端结构,
+//      台账比任何柱状/浮条都清楚 —— 不失真、可直接读出"已实现基本打平,亏在未实现"。 ----
+export function WaterfallFlow(props: {
+  steps: Array<{ id: string; label: string; delta: number; total?: boolean }>
+  format?: (v: number) => string
+}) {
+  if (!props.steps.length) return null
+  const fmt = props.format ?? money
+  // 在"已实现类"(win/loss)之后插一条小计;total 行(净盈亏)前也是一条分隔线。
+  const realizedIds = new Set(['win', 'loss'])
+  const realizedSum = props.steps.filter((s) => realizedIds.has(s.id)).reduce((a, s) => a + s.delta, 0)
+  const hasRealizedSplit = props.steps.some((s) => s.id === 'win') && props.steps.some((s) => !realizedIds.has(s.id) && !s.total)
+  const toneOf = (v: number, total?: boolean) => (total ? 'total' : v >= 0 ? 'up' : 'down')
+  const out: Array<{ key: string; label: string; value: number; tone: string; rule?: boolean; sub?: boolean }> = []
+  for (const s of props.steps) {
+    if (s.total) out.push({ key: s.id, label: s.label, value: s.delta, tone: 'total', rule: true })
+    else out.push({ key: s.id, label: s.label, value: s.delta, tone: toneOf(s.delta) })
+    if (hasRealizedSplit && s.id === 'loss') {
+      out.push({ key: 'realized-sub', label: '已实现小计', value: realizedSum, tone: toneOf(realizedSum), sub: true })
+    }
+  }
+  return (
+    <div className="ledger">
+      {out.map((r) => (
+        <div key={r.key} className={`ledger-row${r.rule ? ' rule' : ''}${r.sub ? ' sub' : ''}`}>
+          <span className="ledger-label">{r.label}</span>
+          <span className={`ledger-amt ${r.tone}`}>{fmt(r.value)}</span>
+        </div>
+      ))}
     </div>
   )
 }
@@ -1919,24 +1968,18 @@ export function Waterfall(props: {
           const y = Math.min(y1, y2)
           const bh = Math.max(2, Math.abs(y2 - y1))
           const last = Boolean(r.total) || i === rows.length - 1
+          const fill = last ? 'var(--gold)' : r.delta >= 0 ? 'var(--up)' : 'var(--down)'
           const bar = (
-            <rect
-              x={x}
-              y={y}
-              width={bw}
-              height={bh}
-              rx={2}
-              fill={last ? 'var(--gold)' : r.delta >= 0 ? 'var(--up)' : 'var(--down)'}
-            >
+            <rect className="cbar" x={x} y={y} width={bw} height={bh} rx={2} fill={fill}>
               <title>{`${r.label} ${fmt(r.total ? r.to : r.delta)}`}</title>
             </rect>
           )
-          if (i > 0 && !r.total) {
+          if (i > 0) {
             const prevX = pad.l + (i - 1) * gap + (gap - bw) / 2 + bw
-            const connectorY = yPx(r.from)
+            const connectorY = yPx(r.total ? (rows[i - 1].total ? rows[i - 1].to : rows[i - 1].to) : r.from)
             return (
               <g key={r.id}>
-                <line x1={prevX} x2={x} y1={connectorY} y2={connectorY} className="grid" />
+                <line x1={prevX} x2={x} y1={connectorY} y2={connectorY} className="wf-connect" />
                 {bar}
               </g>
             )
