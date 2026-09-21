@@ -3,18 +3,22 @@ import { Brand, ThemeToggle } from './chrome.tsx'
 import { BoxStrip, CalendarHeatmap, CaptureBar, ColorScatter, CoverageMeter, ForestPlot, Histogram, MaeBar, MonthBars, MultiLine, Scatter, SignedBars, Treemap, type PathMarker } from './charts.tsx'
 import { InsightDrawer, type Insight } from './InsightDrawer.tsx'
 import { PathDrawer } from './PathDrawer.tsx'
-import { AnalysisPage, LayerFold, tripsCsv } from './AnalysisPage.tsx'
+import { AnalysisPage, CrossPanel, LayerFold, WhyChapter, tripsCsv } from './AnalysisPage.tsx'
 import { HowPage } from './HowPage.tsx'
 import { WhatPage } from './WhatPage.tsx'
-import { WhyLuck } from './ReviewHome.tsx'
+import { WhyFinding, WhyLuck, type WhyEvidenceExtra } from './ReviewHome.tsx'
 import { HealthBadge, HealthDrawer } from './HealthDrawer.tsx'
+import { AttrWaterfallBlock, CumPathBlock, ExitEfficiencyBlock, HoldUiStrip, MaeQuadStrip, type WhyHl } from './WhyKeyCharts.tsx'
+import { dimOf, symbolPareto, whyLeadFacts } from './whyViz.ts'
+import { buildWhyChapters, givebackDx, holdDx, sideDx, structDx, trendDx, weekdayDx } from './whyNav.ts'
 import { ANALYSIS_HASH_FROM_VIEW, TABS, tabForAnchor, tabFromView, viewOf, type Tab } from './views.ts'
-import { buildCover, formatBe } from '../engine/cover.ts'
+import { buildCover, formatBe, pathCoverLine } from '../engine/cover.ts'
 import { ciText, clsPnl, coverageLabel, finiteNum, holdLabel, money, moneyAbs, moneyK, pct, pctPlain, signed } from '../lib/format.ts'
 import { etDateKey, etParts } from '../lib/time.ts'
 import { getTagVerdict } from '../lib/tagVerdicts.ts'
 import { REGIME_BOUND_TEXT, REGIME_LABELS } from '../engine/regime.ts'
 import { diagnose, type Diagnosis } from '../engine/diagnose.ts'
+import { group } from '../engine/checkup.ts'
 import { buildHealth } from '../engine/health.ts'
 import { buildCross } from '../engine/cross.ts'
 import { buildSpace } from '../engine/space.ts'
@@ -279,56 +283,106 @@ function groupForestItems(rows: GroupRow[]) {
  */
 function ConcentrationTreemap(props: {
   trips: Array<{ id: string; symbol: string; realizedPnl: number }>
-  onPick?: (id: string) => void
+  hl: WhyHl
+  onPick?: (trip: { id: string; symbol: string }) => void
 }) {
   const rows = props.trips.filter((t) => Number.isFinite(t.realizedPnl) && t.realizedPnl !== 0)
   if (rows.length < 2) return null
-  const top = [...rows].sort((a, b) => Math.abs(b.realizedPnl) - Math.abs(a.realizedPnl))[0]
-  const gross = rows.filter((t) => t.realizedPnl > 0).reduce((s, t) => s + t.realizedPnl, 0)
-  const topShare = gross > 0 && top.realizedPnl > 0 ? Math.round((top.realizedPnl / gross) * 100) : null
+  const bySym = new Map<string, { pnl: number; n: number; max: number }>()
+  for (const t of rows) {
+    const cur = bySym.get(t.symbol) || { pnl: 0, n: 0, max: 0 }
+    cur.pnl += t.realizedPnl
+    cur.n += 1
+    if (Math.abs(t.realizedPnl) > Math.abs(cur.max)) cur.max = t.realizedPnl
+    bySym.set(t.symbol, cur)
+  }
+  const top = [...bySym.entries()].sort((a, b) => b[1].pnl - a[1].pnl)[0]
+  const topWin = [...bySym.entries()].filter(([, v]) => v.pnl > 0).sort((a, b) => b[1].pnl - a[1].pnl)[0]
+  const grossWin = [...bySym.values()].filter((v) => v.pnl > 0).reduce((s, v) => s + v.pnl, 0)
+  const winShare = topWin && grossWin > 0 ? topWin[1].pnl / grossWin : null
+  const maxShare = top && top[1].pnl !== 0 ? Math.abs(top[1].max) / Math.abs(top[1].pnl) : null
+  const overNet = maxShare != null && maxShare > 1
+  const kind = top && top[1].n <= 2 && (maxShare ?? 0) >= 0.8 ? '单笔异常贡献' : '多笔持续贡献'
   return (
     <>
-      {/* 只保留结论,去掉"每块=一笔"这类读图说明。 */}
-      {topShare != null ? (
-        <p className="tiny">最大一块({top.symbol})单独占毛利 {topShare}% —— 一块独大就是"靠一两单撑起来"。</p>
-      ) : null}
+      <p className="tiny">
+        Treemap：只表达集中度（面积=|金额|）。n={rows.length}
+        {topWin && winShare != null ? (
+          <>
+            {' '}
+            {topWin[0]} 占毛利 {pctPlain(winShare, 0)}
+          </>
+        ) : null}
+        {top ? (
+          <>
+            {' '}
+            ｜{top[0]} {money(top[1].pnl)}｜{top[1].n} 笔｜最大一笔占该标的 {maxShare == null ? '—' : pctPlain(maxShare, 0)}
+            （{kind}）
+            {overNet ? '。其他交易小额亏损，故单笔超过该标的净盈利。' : ''}
+          </>
+        ) : null}
+      </p>
       <Treemap
-        height={300}
+        height={180}
         items={rows.map((t) => ({
           id: t.id,
           label: t.symbol,
           value: Math.abs(t.realizedPnl),
           up: t.realizedPnl >= 0,
           sub: money(t.realizedPnl),
+          dim: dimOf(props.hl, t.symbol, t.id),
         }))}
-        onPick={props.onPick}
+        onPick={(id) => {
+          const t = rows.find((x) => x.id === id)
+          if (t) props.onPick?.(t)
+        }}
       />
     </>
   )
 }
 
-/**
- * 主因卡内的轻量分组证据:只画森林图,不带 <article>壳/标题/明细表折叠。
- * 完整版(含明细表)仍在下面切面区的 GroupViz——避免"同一切面完整渲染两次"。
- */
-function GroupForest(props: { rows: GroupRow[]; onPick: (row: GroupRow) => void }) {
+function Ch(props: {
+  meta?: { id: string; label: string; status: string; role: 'core' | 'candidate' | 'explore' | 'quality' | 'ledger' }
+  children: ReactNode
+}) {
+  if (!props.meta) return null
+  const m = props.meta
   return (
-    <ForestPlot
-      items={groupForestItems(props.rows)}
-      format={money}
-      onPick={(id) => {
-        const row = props.rows.find((r) => r.id === id)
-        if (row && row.n > 0) props.onPick(row)
-      }}
-    />
+    <WhyChapter id={m.id} title={m.label} status={m.status} role={m.role}>
+      {props.children}
+    </WhyChapter>
   )
+}
+
+function worstGroupExtra(rows: GroupRow[]): WhyEvidenceExtra {
+  const ranked = rows.filter((r) => r.n > 0)
+  const worst = [...ranked].sort((a, b) => a.pnl - b.pnl)[0]
+  if (!worst) return {}
+  return {
+    scope: `${worst.label} · n=${worst.n}`,
+    realized: worst.pnl,
+    counterfactual: -worst.pnl,
+    metric: worst.expectancy == null ? '—' : `单笔均值 ${money(worst.expectancy)}`,
+    limit: '机械反事实只是样本内加减，不代表该规则未来有效',
+  }
 }
 
 function GroupViz(props: { title: string; rows: GroupRow[]; onPick: (row: GroupRow) => void; id?: string }) {
   const items = groupForestItems(props.rows)
+  const exRows = props.rows.filter((r) => r.n >= 2 && (r.expectancy != null || r.expectancyExMax != null))
   return (
     <article className="panel" id={props.id}>
       <h3>{props.title}</h3>
+      {exRows.length ? (
+        <ul className="tiny why-exmax">
+          {exRows.map((r) => (
+            <li key={r.id}>
+              {r.label}：原始均值 {r.expectancy == null ? '—' : money(r.expectancy)} / 剔除最大一笔后{' '}
+              {r.expectancyExMax == null ? '—' : money(r.expectancyExMax)} / n={r.n}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <ForestPlot
         items={items}
         format={money}
@@ -598,9 +652,9 @@ function TradeBenchPanel(props: {
   const excesses = props.rows.map((r) => r.excess).filter((x): x is number => x != null)
   return (
     <article className="panel wide">
-      <h3>交易级基准比较</h3>
+      <h3>持有期相对 SPY（机会成本）</h3>
       <p className="muted">
-        每笔闭环交易的持有期收益率 − SPY 同期收益率。这是交易级持有期比较，不是账户收益率，也不代表账户财富跑赢或跑输 SPY。
+        每笔从入场到出场期间，标的收益率 − SPY 同期收益率。空头已翻转标的收益。这是持有期超额，不是账户满仓对照，也不是亏损原因。
       </p>
       {allMissing ? (
         <div className="banner cannot-prove">
@@ -610,7 +664,7 @@ function TradeBenchPanel(props: {
       ) : (
         <>
           <div className="kv-grid">
-            <span>跑赢 SPY</span>
+            <span>持有期跑赢 SPY 的笔数</span>
             <b>
               {props.beat} / {props.n} 笔
             </b>
@@ -878,69 +932,80 @@ function QualityRead(props: {
   )
 }
 
-function PnLBySymbol(props: { trips: RoundTrip[] }) {
-  const [showAll, setShowAll] = useState(false)
-  const bySym = new Map<string, number>()
-  for (const t of props.trips) bySym.set(t.symbol, (bySym.get(t.symbol) || 0) + t.realizedPnl)
-  const rows = [...bySym.entries()].map(([symbol, pnl]) => ({ symbol, pnl })).sort((a, b) => b.pnl - a.pnl)
+function PnLBySymbol(props: { trips: RoundTrip[]; hl: WhyHl; onPick: (symbol: string) => void }) {
+  const rows = symbolPareto(props.trips)
   if (!rows.length) return null
-  const maxAbs = Math.max(...rows.map((r) => Math.abs(r.pnl)), 1)
-  const wins = rows.filter((r) => r.pnl > 0)
-  const losses = rows.filter((r) => r.pnl < 0).sort((a, b) => a.pnl - b.pnl)
-  const shownWins = showAll ? wins : wins.slice(0, 5)
-  const shownLosses = showAll ? losses : losses.slice(0, 5)
-  const hiddenCount = rows.length - shownWins.length - shownLosses.length
-  const bar = (r: { symbol: string; pnl: number }) => {
-    const width = `${(Math.abs(r.pnl) / maxAbs) * 50}%`
-    const isWin = r.pnl >= 0
-    return (
-      <div key={r.symbol} className="div-bar-row">
-        <span className="div-label">{r.symbol}</span>
-        <div className="div-track">
-          <div className={`div-bar ${isWin ? 'win' : 'loss'}`} style={{ width }} />
-        </div>
-        <span className={`div-amt ${isWin ? 'up' : 'down'}`}>{money(r.pnl)}</span>
-      </div>
-    )
-  }
+  const overNet = rows.filter((r) => r.maxShare != null && r.maxShare > 1)
   return (
-    <div>
-      <div className="div-scale">
-        <span className="down">亏损</span>
-        <span>0</span>
-        <span className="up">盈利</span>
-      </div>
-      {shownLosses.map(bar)}
-      {shownWins.length && shownLosses.length ? <div className="div-divider" /> : null}
-      {shownWins.map(bar)}
-      {hiddenCount > 0 ? (
-        <button type="button" className="link" onClick={() => setShowAll((v) => !v)}>
-          {showAll ? '收起' : `查看全部 ${rows.length} 只`}
-        </button>
+    <>
+      <p className="tiny">条形图：按标的精确贡献排序（金额）。n={props.trips.length}</p>
+      {overNet.length ? (
+        <p className="tiny">
+          {overNet.map((r) => r.symbol).join('、')} 最大单笔超过该标的净盈利：其他交易小额亏损，故单笔占比大于 100%。
+        </p>
       ) : null}
-    </div>
+      <SignedBars
+        items={rows.map((r) => ({
+          id: r.symbol,
+          label: r.symbol,
+          value: r.pnl,
+          n: r.n,
+          dim: dimOf(props.hl, r.symbol),
+        }))}
+        format={money}
+        onPick={props.onPick}
+      />
+      <details className="fold-block">
+        <summary>按标的明细</summary>
+        <table className="grid trips">
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>n</th>
+              <th>合计</th>
+              <th>均笔</th>
+              <th>最大单笔占比</th>
+              <th>亏损累计贡献</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr
+                key={r.symbol}
+                className={dimOf(props.hl, r.symbol) ? 'dim' : ''}
+                onClick={() => props.onPick(r.symbol)}
+                role="button"
+                tabIndex={0}
+              >
+                <td>{r.symbol}</td>
+                <td>{r.n}</td>
+                <td className={clsPnl(r.pnl)}>{money(r.pnl)}</td>
+                <td>{money(r.mean)}</td>
+                <td>{r.maxShare == null ? '—' : pctPlain(r.maxShare, 0)}</td>
+                <td>{r.lossCumShare == null ? '—' : pctPlain(r.lossCumShare, 0)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
+    </>
   )
 }
 
 function RDistribution(props: { trips: RoundTrip[] }) {
-  const rs = props.trips.map((t) => t.rMultiple).filter((r): r is number => r != null && Number.isFinite(r))
-  if (rs.length < 3) return null
-  const mean = rs.reduce((s, r) => s + r, 0) / rs.length
-  const sorted = [...rs].sort((a, b) => a - b)
-  const median = sorted.length % 2 ? sorted[Math.floor(sorted.length / 2)] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
-  const winN = rs.filter((r) => r > 0).length
-  const gap = mean - median
-  const tail =
-    gap < -0.5
-      ? `少数极端亏损把平均拉到 ${mean.toFixed(1)}R,远低于中位 ${median.toFixed(1)}R`
-      : gap > 0.5
-        ? `少数大赢把平均拉到 ${mean.toFixed(1)}R,高于中位 ${median.toFixed(1)}R`
-        : `平均与中位接近(${mean.toFixed(1)}R / ${median.toFixed(1)}R),分布没明显偏斜`
+  const flagged = props.trips.filter((t) => (t.rFlags ?? []).length > 0)
+  const clean = props.trips.filter((t) => t.rMultiple != null && Number.isFinite(t.rMultiple) && !(t.rFlags ?? []).length)
+  const rs = clean.map((t) => t.rMultiple as number)
   return (
-    <div style={{ marginTop: 10 }}>
-      <BoxStrip values={rs} format={(v) => `${v.toFixed(1)}R`} />
-      <p className="tiny" style={{ marginTop: 6 }}>
-        {winN}/{rs.length} 笔为正 R · {tail}。箱=中间一半，点=每一笔净 R（已实现÷ATR×数量）。费用过大或风险单位过小时 R 会失真，见口径异常。
+    <div className="why-r-compact" style={{ marginTop: 10 }}>
+      <p className="tiny">仅 {clean.length} 笔有效，不参与主要归因。其余 {flagged.length} 笔缺少可靠的初始风险或止损数据。</p>
+      {rs.length >= 4 ? (
+        <BoxStrip values={rs} height={160} format={(v) => `${v.toFixed(1)}R`} />
+      ) : (
+        <p className="tiny">有效样本不足，不画 R 分布、不报平均 R。</p>
+      )}
+      <p className="tiny">
+        有效 n={clean.length} / {props.trips.length}。口径异常见下方数据质量。
       </p>
     </div>
   )
@@ -1005,6 +1070,7 @@ export function Dashboard(props: {
   const [range, setRange] = useState<{ lo: number; hi: number } | null>(null)
   const [showAllTrips, setShowAllTrips] = useState(false)
   const [focusTrip, setFocusTrip] = useState<string | null>(null)
+  const [whyHl, setWhyHl] = useState<WhyHl>(null)
   const [showAllLenses, setShowAllLenses] = useState(false) // 入场时机面板的逃生口:判错也只花一次点击
 
   useEffect(() => {
@@ -1026,7 +1092,7 @@ export function Dashboard(props: {
   const goWhyTrip = (id: string) => {
     setFocusTrip(id)
     setShowAllTrips(true)
-    go('why', 'trips')
+    go('why', 'why-trips')
   }
 
   const persistPrefs = (next: ProPrefs) => {
@@ -1089,7 +1155,7 @@ export function Dashboard(props: {
   const space = useMemo(() => (filtered ? buildSpace(scoped, book.bars) : book.space), [filtered, scoped, book.space, book.bars])
   const experimentRows = useMemo(() => {
     const closedEps = book.episodes.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP'))
-    return withEvaluations(loadExperiments(book.accountName), closedEps, prefs)
+    return withEvaluations(loadExperiments(book.accountName), closedEps, prefs, book.bars)
   }, [book, prefs, expTick])
   const claimedIds = useMemo(
     () => experimentRows.filter((e) => e.status === 'active').map((e) => e.diagnosisId),
@@ -1099,6 +1165,37 @@ export function Dashboard(props: {
     () => buildCover(book, diagnoses, health, experimentRows),
     [book, diagnoses, health, experimentRows],
   )
+  const leadFacts = useMemo(() => whyLeadFacts(book), [book])
+  const pickWhy = (next: { symbol?: string; tripId?: string }) => {
+    setWhyHl((cur) => {
+      if (next.tripId && cur?.tripId === next.tripId) return null
+      if (!next.tripId && next.symbol && cur?.symbol === next.symbol && !cur.tripId) return null
+      return next
+    })
+  }
+  const pickWhyTrip = (id: string) => {
+    const t = closedAll.find((x) => x.id === id)
+    if (t) {
+      pickWhy({ tripId: t.id, symbol: t.symbol })
+      setFocusTrip(t.id)
+    }
+  }
+  const whyChapters = useMemo(
+    () =>
+      buildWhyChapters({
+        diagnoses,
+        health,
+        closedN: closedAll.length,
+        sides: book.checkup.sides,
+        weekdays: book.checkup.weekdays,
+        holds: book.checkup.holdBuckets,
+        sessionRelevant: book.checkup.sessionRelevant || showAllLenses,
+        hasCross: cross.symbolHold.some((r) => r.n >= 5) || cross.weekdayRegime.some((r) => r.n >= 5),
+        hasMc: Boolean(book.analytics.monteCarlo),
+      }),
+    [diagnoses, health, closedAll.length, book.checkup, showAllLenses, cross, book.analytics.monteCarlo],
+  )
+  const whyCh = (id: string) => whyChapters.find((c) => c.id === id)
   const claimDiagnosis = (d: Diagnosis) => {
     if (!d.canClaim || !d.experiment) return
     const closedEps = book.episodes.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP'))
@@ -1110,7 +1207,7 @@ export function Dashboard(props: {
       constraint: d.experiment.constraint,
       targetN: d.experiment.targetN,
       baselineN: closedEps.length,
-      baselineExpectancy: p.expectancy.value,
+      baselineExpectancy: d.experiment.constraint.kind === 'shadow-hold' ? 0 : p.expectancy.value,
       claimedTripIds: closedEps.map((t) => t.id),
       accountKey: book.accountName.trim() || 'default',
       status: 'active',
@@ -1359,92 +1456,13 @@ export function Dashboard(props: {
         cross={cross}
         diagnoses={diagnoses}
         onEvidence={goEvidence}
-        chartFor={(d) => {
-          // 结论+依据:每张主因卡按 evidenceAnchor 就地内嵌它的主证据图,不跳走。
-          // 只覆盖真会渲染成卡片的锚点(mae / mc / sides);sensitivity、quality 对应的卡
-          // 已被 CONC_IDS/QUALITY_IDS 过滤掉、且无对应图,保持文字深链。
-          const mc = book.analytics.monteCarlo
-          switch (d.evidenceAnchor) {
-            case 'mae':
-              // 浮盈回吐 / 退出捕获:MAE×MFE 散点。数据/交互复用下方 #mae 图。
-              return scatter.length ? (
-                <Scatter
-                  height={220}
-                  points={scatter.map((t) => ({
-                    id: t.id,
-                    x: t.maePct || 0,
-                    y: t.mfePct || 0,
-                    up: t.realizedPnl >= 0,
-                    label: `${t.symbol} · ${money(t.realizedPnl)} · MAE ${t.maePct != null ? pctPlain(t.maePct, 1) : 'N/A'} · MFE ${t.mfePct != null ? pctPlain(t.mfePct, 1) : 'N/A'}`,
-                  }))}
-                  onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
-                />
-              ) : null
-            case 'mc':
-              // 运气类:蒙特卡洛抽样终值分布,标出真实终值位置。取单张终值直方图(完整两张在下方 #mc)。
-              return mc ? (
-                <Histogram
-                  values={mc.terminals}
-                  bins={29}
-                  format={moneyK}
-                  markerValue={mc.realizedTerminal}
-                  markerLabel="你在这里"
-                />
-              ) : null
-            // 分组类卡:卡内只放轻量森林图(GroupForest),完整分组图(带明细表)留在下面切面区,
-            // 不再整组件复用 → 消除"同一切面渲染两次"。
-            case 'sides':
-              return (
-                <GroupForest
-                  rows={book.checkup.sides}
-                  onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-                />
-              )
-            case 'hold':
-              return (
-                <GroupForest
-                  rows={book.checkup.holdBuckets}
-                  onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-                />
-              )
-            case 'weekdays':
-              return (
-                <GroupForest
-                  rows={book.checkup.weekdays}
-                  onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-                />
-              )
-            case 'freq':
-              return (
-                <GroupForest
-                  rows={book.checkup.regimes}
-                  onPick={(row) => openInsight({ kind: 'group', row, trips: book.episodes.filter((t) => t.regime === row.id) })}
-                />
-              )
-            case 'sensitivity':
-              // sensitivity 这个 anchor 被多类诊断共用:集中度(structure-max-win/risk-concentrate)
-              // 和前后半程趋势(trend-*)。只有集中度该配矩形树图;趋势类的数字已在标题里,不画图。
-              // 按 id 精确分发,别按 anchor 一刀切(否则趋势卡会误画同一张 treemap → 重复)。
-              if (d.id !== 'structure-max-win' && d.id !== 'risk-concentrate') return null
-              return (
-                <ConcentrationTreemap
-                  trips={scoped}
-                  onPick={(id) => {
-                    const t = closed.find((x) => x.id === id) || closedAll.find((x) => x.id === id)
-                    if (t) openTrip(t)
-                  }}
-                />
-              )
-            // opp-cost / stop-scan / rule-replay / kelly / psm 的图在「怎么办」页的反事实证据里,
-            // 不在本组件作用域,无法就地内嵌 → 保持文字深链。quality 无图形式,同理。
-            default:
-              return null
-          }
-        }}
+        whyLead={cover.whyLead}
+        leadFacts={leadFacts}
+        coverage={health.label}
+        nLine={cover.nLine}
+        chapters={whyChapters}
       >
-        <h2 className="review-sec" id="sec-behavior">交易与行为</h2>
-        <div>
-          <div className="filter-row">
+        <div className="filter-row">
             <span className="filter-k">看哪些交易</span>
             <div className="sorts">
               {(['all', 'long', 'short'] as const).map((side) => (
@@ -1471,26 +1489,56 @@ export function Dashboard(props: {
           {filtered ? (
             <p className="tiny">胜率和期望已按上面选中的交易重算。TWR 仍用整本账。</p>
           ) : null}
-          <p className="why-layer-k">结论</p>
-          <article className="panel" id="quality">
-            <h3>交易质量</h3>
-            <QualityRead
-              trips={scoped}
-              winRate={winRate}
-              expectancy={expectancy}
-              profitFactor={profitFactor}
-              payoff={p.payoff}
-              filtered={filtered}
-              onWinRate={() => openInsight({ kind: 'winRate' })}
-              onExpectancy={() => openInsight({ kind: 'expectancy' })}
+          {whyHl ? (
+            <button type="button" className="link" onClick={() => setWhyHl(null)}>
+              清除高亮{whyHl.symbol ? ` · ${whyHl.symbol}` : ''}
+            </button>
+          ) : null}
+
+          <Ch meta={whyCh('why-structure')}>
+            <WhyFinding
+              d={structDx(diagnoses)}
+              extra={{
+                scope: `n=${scoped.length}`,
+                realized: leadFacts.net,
+                metric: leadFacts.maxWinShare == null ? '—' : `最大标的占毛利 ${pctPlain(leadFacts.maxWinShare, 0)}`,
+                limit: cover.nLine,
+              }}
             />
-          </article>
-          <p className="why-layer-k">证据</p>
-          <article className="panel">
-            <h3>盈亏贡献</h3>
-            <PnLBySymbol trips={scoped} />
-          </article>
-          <div className="grid-2">
+            <AttrWaterfallBlock trips={scoped} hl={whyHl} onPick={pickWhy} />
+            <CumPathBlock trips={scoped} equity={book.equity} hl={whyHl} onPickTrip={pickWhyTrip} />
+            <ConcentrationTreemap trips={scoped} hl={whyHl} onPick={(t) => pickWhy({ tripId: t.id, symbol: t.symbol })} />
+          </Ch>
+
+<Ch meta={whyCh('why-giveback')}>
+            <WhyFinding
+              d={givebackDx(diagnoses)}
+              extra={{
+                scope: pathCoverLine(book.space.giveback) ?? `${leadFacts.floatedToLoss}/${scoped.length} 笔曾浮盈转亏`,
+                mfeCap: book.space.giveback.nPath > 0 ? book.space.giveback.sumDollar : null,
+                metric: '日线估算回吐，不是可达收益',
+                limit: `可计算路径 n=${p.pathComputable}；同日排除 ${p.pathSameDayExcluded}；缺行情 ${p.pathMissingExcluded}`,
+              }}
+            />
+            <ExitEfficiencyBlock trips={scoped} hl={whyHl} onPick={pickWhyTrip} />
+            <p className="tiny">MAE×MFE：看路径形状。象限是观察，不升级成主因。有效 n={scatter.length}</p>
+            {scatter.length ? (
+              <Scatter
+                height={220}
+                points={scatter.map((t) => ({
+                  id: t.id,
+                  x: t.maePct || 0,
+                  y: t.mfePct || 0,
+                  up: t.realizedPnl >= 0,
+                  dim: dimOf(whyHl, t.symbol, t.id),
+                  label: `${t.symbol} · ${money(t.realizedPnl)} · MAE ${t.maePct != null ? pctPlain(t.maePct, 1) : 'N/A'} · MFE ${t.mfePct != null ? pctPlain(t.mfePct, 1) : 'N/A'}`,
+                }))}
+                onPick={(id) => pickWhyTrip(id)}
+              />
+            ) : (
+              <p className="tiny">没有可画的日线 MAE/MFE。</p>
+            )}
+            <MaeQuadStrip trips={scoped} />
             <article className="panel" id="mae">
               <h3>日线估算退出质量</h3>
               <div className="metric-strip">
@@ -1549,8 +1597,10 @@ export function Dashboard(props: {
               </div>
               </details>
             </article>
-            <article className="panel wide">
-              <h3>ATR 标准化盈亏</h3>
+            <article className="panel wide why-r-compact" id="atr-r">
+              <h3>
+                ATR 标准化盈亏 <span className="n-chip">仅 {Math.max(0, scoped.length - p.atrR.flagged)} 笔有效，不参与主要归因</span>
+              </h3>
               {p.atrR.n === 0 ? (
                 <p className="tiny">
                   没有足够日线，ATR-R 记为缺失，不用 2% 代替。可计算 {p.pathComputable} · 同日排除 {p.pathSameDayExcluded} · 缺行情{' '}
@@ -1559,31 +1609,22 @@ export function Dashboard(props: {
               ) : (
                 <>
                   <p className="muted">
-                    R 单位 = 开仓前 ATR × 数量。净 R = 已实现盈亏 / R 单位（含费用）。没有足够日线记为缺失，不用 2% 代替。计划止损 R 本轮未接入。
+                    R 单位 = 开仓前 ATR × 数量。净 R 含费用。没有足够日线记为缺失，不用 2% 代替。平均 R 在口径异常时不作为主要数字。
                   </p>
                   <div className="kv-grid">
-                    <span>有效 n</span>
-                    <b>{p.atrR.n}</b>
-                    <span>平均净 R / 价差 R / 费用 R</span>
+                    <span>有效 / 口径异常</span>
                     <b>
-                      {p.atrR.mean != null ? p.atrR.mean.toFixed(2) : '—'} / {p.atrR.meanPrice != null ? p.atrR.meanPrice.toFixed(2) : '—'} /{' '}
-                      {p.atrR.meanFee != null ? p.atrR.meanFee.toFixed(2) : '—'}
+                      {Math.max(0, scoped.length - p.atrR.flagged)} / {p.atrR.flagged}
                     </b>
-                    <span>中位净 R</span>
-                    <b>{p.atrR.median != null ? p.atrR.median.toFixed(2) : '—'}</b>
-                    <span>左尾 5% / 10%</span>
-                    <b>
-                      {p.atrR.p05 != null ? p.atrR.p05.toFixed(2) : '—'} / {p.atrR.p10 != null ? p.atrR.p10.toFixed(2) : '—'}
-                    </b>
-                    <span>口径异常</span>
-                    <b>{p.atrR.flagged} 笔（费用占比过高、风险单位过小、|R|&gt;8、疑似未复权等）</b>
+                    <span>
+                      <a href="#why-quality">数据质量</a>
+                    </span>
+                    <b>修复口径需补初始风险或止损，本轮无法自动修复</b>
                   </div>
                   <RDistribution trips={scoped} />
                 </>
               )}
             </article>
-          </div>
-          {/* 「日线估算 MAE × MFE」散点已在主因卡(浮盈回吐/退出捕获)内就地画,此处删除,避免同图重复。 */}
         <TradeBenchPanel
           rows={tradeBench.rows}
           n={tradeBench.n}
@@ -1592,14 +1633,44 @@ export function Dashboard(props: {
           meanExcess={tradeBench.meanExcess}
           onOpenTrip={openTrip}
         />
+          </Ch>
 
-        <p className="why-layer-k">更多切面</p>
-        <LayerFold
-          id="fold-freq"
-          title="持仓与频率"
-          summary="频率构成 · 各频率累计盈亏 · 收益率×持仓时长 · 5 组"
-          anchors={['freq', 'regimes']}
-        >
+<Ch meta={whyCh('why-symbols')}>
+            <PnLBySymbol trips={scoped} hl={whyHl} onPick={(symbol) => pickWhy({ symbol })} />
+          </Ch>
+
+<Ch meta={whyCh('why-sides')}>
+          <WhyFinding d={sideDx(diagnoses)} extra={worstGroupExtra(book.checkup.sides)} />
+          <p className="tiny">点须：多空期望稳不稳。</p>
+          <GroupViz
+            id="sides"
+            title="多头 / 空头"
+            rows={book.checkup.sides}
+            onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+          />
+        </Ch>
+
+<Ch meta={whyCh('why-weekdays')}>
+          <WhyFinding d={weekdayDx(diagnoses)} extra={worstGroupExtra(book.checkup.weekdays)} />
+          <p className="tiny">点须：星期期望稳不稳。小样本不当日历规律。</p>
+          <GroupViz
+            id="weekdays"
+            title="星期"
+            rows={book.checkup.weekdays}
+            onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+          />
+        </Ch>
+
+<Ch meta={whyCh('why-freq')}>
+            <WhyFinding
+              d={holdDx(diagnoses)}
+              extra={{
+                ...worstGroupExtra(book.checkup.holdBuckets),
+                limit: '细档持仓图仅观察，不改诊断分组。机械反事实只是样本内加减，不代表该规则未来有效',
+              }}
+            />
+            <p className="tiny">点须：分组期望稳不稳。明细表在各组下面。</p>
+            <HoldUiStrip trips={scoped} onPick={pickWhyTrip} />
         <section id="freq" className="freq-block">
           <RegimeMixBar checkup={book.checkup} />
           <article className="panel" style={{ marginTop: 24 }}>
@@ -1652,14 +1723,15 @@ export function Dashboard(props: {
             </article>
           </div>
         </section>
-        </LayerFold>
+        <GroupViz
+          id="hold"
+          title="持仓时间"
+          rows={book.checkup.holdBuckets}
+          onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+        />
+        </Ch>
 
-        <LayerFold
-          id="fold-behavior"
-          title="行为"
-          summary="开盘盘中尾盘 · 持仓时间 · 多空 · 星期 · 处置效应 · 追高 · 5 组"
-          anchors={['sessions', 'hold', 'sides', 'weekdays']}
-        >
+<Ch meta={whyCh('why-behavior')}>
         <div>
           <p className="muted" style={{ marginBottom: 12 }}>
                         行为观察按持仓片段。n&lt;5 只列交易；5–9 探索性；10–29 弱结论；≥30 才谈规律。点一条打开该组。
@@ -1686,24 +1758,6 @@ export function Dashboard(props: {
                 onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
               />
             ) : null}
-            <GroupViz
-              id="hold"
-              title="持仓时间"
-              rows={book.checkup.holdBuckets}
-              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-            />
-            <GroupViz
-              id="sides"
-              title="多头 / 空头"
-              rows={book.checkup.sides}
-              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-            />
-            <GroupViz
-              id="weekdays"
-              title="星期"
-              rows={book.checkup.weekdays}
-              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-            />
             <article className="panel">
               <h3>处置效应与加仓</h3>
               <p className="tiny">{book.checkup.disposition.fact}</p>
@@ -1748,142 +1802,10 @@ export function Dashboard(props: {
               </div>
             </article>
           </div>
-
         </div>
-        </LayerFold>
+        </Ch>
 
-          <p className="why-layer-k">查账</p>
-          <LayerFold
-            id="fold-trips"
-            title="逐笔明细"
-            summary={`${closed.length} 笔往返 · 成交/往返可切换`}
-            anchors={['trips']}
-          >
-          <div className="table-hd" id="trips">
-            <div className="sorts">
-              {(['time', 'pnl', 'r', 'hold'] as const).map((k) => (
-                <button type="button" key={k} className={sort === k ? 'on' : ''} onClick={() => setSort(k)}>
-                  {k === 'time' ? '时间' : k === 'pnl' ? '盈亏' : k === 'r' ? 'ATR标准化' : '持仓'}
-                </button>
-              ))}
-            </div>
-            <button type="button" className="link" onClick={() => setShowFills((v) => !v)}>
-              {showFills ? '看往返' : '查看成交'}
-            </button>
-          </div>
-          {showFills ? (
-            <table className="grid">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>代码</th>
-                  <th>方向</th>
-                  <th>数量</th>
-                  <th>价格</th>
-                  <th>费用</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...book.fills]
-                  .sort((a, b) => b.time.getTime() - a.time.getTime())
-                  .map((f) => (
-                    <tr key={f.id}>
-                      <td>{f.time.toLocaleString('zh-CN', { hour12: false })}</td>
-                      <td>
-                        {f.symbol}
-                        {f.kind === 'drip' ? <div className="muted">分红再投资</div> : null}
-                      </td>
-                      <td>{f.side === 'buy' ? '买' : '卖'}</td>
-                      <td>{f.qty}</td>
-                      <td>{f.price.toFixed(2)}</td>
-                      <td>{f.fees.toFixed(2)}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          ) : (
-            <>
-            <table className="grid trips">
-              <thead>
-                <tr>
-                  <th>持仓片段</th>
-                  <th>方向</th>
-                  <th>数量</th>
-                  <th>开 / 平</th>
-                  <th>净盈亏</th>
-                  <th>ATR标准化盈亏</th>
-                  <th>日线估算 MAE / MFE</th>
-                  <th>标记</th>
-                </tr>
-              </thead>
-              <tbody>
-                {closed.slice(0, showAllTrips ? undefined : 5).map((t) => (
-                  <tr
-                    key={t.id}
-                    id={`trip-${t.id}`}
-                    className={selected?.id === t.id || focusTrip === t.id ? 'on' : ''}
-                    onClick={() => openTrip(t)}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <td>
-                      <b>{t.symbol}</b>
-                      <div className="muted">{t.name}</div>
-                    </td>
-                    <td>{t.side === 'long' ? '多' : '空'}</td>
-                    <td>{t.qty}</td>
-                    <td>
-                      {t.openPrice.toFixed(2)} → {t.closePrice?.toFixed(2)}
-                    </td>
-                    <td className={clsPnl(t.realizedPnl)}>{money(t.realizedPnl)}</td>
-                    <td>
-                      {t.rMultiple != null ? `${signed(t.rMultiple)}R` : '—'}
-                      {(t.rFlags ?? []).length ? <div className="tiny muted">R 口径异常</div> : null}
-                      <div className="muted">
-                        {holdLabel(t.holdMinutes)} {sessionLabel(t)}
-                        {t.annualizedReturn != null && t.holdMinutes >= 10 * 1440
-                          ? ` · 年化 ${t.annualizedReturn > 10 ? '>1000%' : pct(t.annualizedReturn)}`
-                          : ''}
-                      </div>
-                    </td>
-                    <td>
-                      {t.maePct == null || t.mfePct == null ? (
-                        <div className="muted">{t.sameDay ? '不适用 · 同日不计算' : '未提供 · 缺行情'}</div>
-                      ) : (
-                        <>
-                          <MaeBar mae={t.maePct} mfe={t.mfePct} />
-                          <div className="muted">
-                            {pct(t.maePct)} · {pct(t.mfePct)} · 估算值
-                          </div>
-                        </>
-                      )}
-                    </td>
-                    <td>
-                      {t.tags
-                        .filter((tag) => tag !== 'episode')
-                        .map((tag) => {
-                          const chip = suspectedTagLabel(t, tag)
-                          return (
-                            <em key={tag} className={`tag ${chip.kind}`} title={chip.title}>
-                              {chip.text}
-                            </em>
-                          )
-                        })}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {closed.length > 5 ? (
-              <button type="button" className="link" onClick={() => setShowAllTrips((v) => !v)}>
-                {showAllTrips ? '收起' : `展开全部 ${closed.length} 笔`}
-              </button>
-            ) : null}
-            </>
-          )}
-          </LayerFold>
-        </div>
-
+<Ch meta={whyCh('why-luck')}>
           <WhyLuck
             line={cover.luckLine}
             losePct={
@@ -1897,17 +1819,7 @@ export function Dashboard(props: {
             }
             cleared={cover.cleared}
           />
-          <LayerFold
-            id="fold-luck"
-            title="运气检验"
-            summary="蒙特卡洛 · 单笔盈亏分布 · 敏感性"
-            // luck-zone 结论条渲染在本折叠区之上、之外。仍把它登记为本区锚点是有意的:
-            // 点侧栏「实力还是运气」时,顺带展开下面的运气检验证据,实现"结论+依据一次到位"。
-            anchors={['sec-checks', 'mc', 'sensitivity', 'luck-zone']}
-          >
-          <h2 className="review-sec" id="sec-checks">
-            检验
-          </h2>
+          <WhyFinding d={trendDx(diagnoses)} />
           <article className="panel wide" id="mc">
             <h3>蒙特卡洛：有放回抽样看运气</h3>
             {book.analytics.monteCarlo ? (
@@ -1933,7 +1845,14 @@ export function Dashboard(props: {
                         ⓘ
                       </span>
                     </p>
-                    {/* 抽样终值直方图已在主因卡(运气类)内就地画,此处不重复;只保留独有的回撤分布。 */}
+                    <h4 className="tiny" style={{ margin: '8px 0 4px' }}>抽样终值</h4>
+                    <Histogram
+                      values={mc.terminals}
+                      bins={29}
+                      format={moneyK}
+                      markerValue={mc.realizedTerminal}
+                      markerLabel="你在这里"
+                    />
                     <h4 className="tiny" style={{ margin: '16px 0 4px' }}>交易序列最大回撤（路径风险）</h4>
                     <Histogram
                       values={mc.maxDDs.map((v) => -v)}
@@ -1951,7 +1870,7 @@ export function Dashboard(props: {
                       </p>
                       <ul className="tiny plain-facts">
                         <li>
-                          <b>{lose}%</b> 的抽样最终是亏钱的。{lose >= 55 ? '这套交易本身就偏亏,不只是路径运气。' : ''}
+                          <b>{lose}%</b> 的抽样最终是亏钱的。这不能单独证明策略长期负期望。
                         </li>
                         <li>
                           你实际的交易序列最大回撤 <b>{moneyAbs(mc.realizedMaxDD)}</b>,比约 {ddPct}% 的抽样更深
@@ -1982,7 +1901,7 @@ export function Dashboard(props: {
               const dropWin = sv.expectancyDropMaxWin
               const concVerdict =
                 conc != null && conc >= 0.5
-                  ? `高度依赖极少数交易:毛利的 ${pctPlain(conc, 0)} 来自最大一笔。去掉它,历史单笔均值就从 ${money(sv.meanPnl ?? 0)} 掉到 ${dropWin == null ? '—' : money(dropWin)} —— 这更像被一两单撑起来,不是稳定的 edge。`
+                  ? `当前样本的正向结果高度依赖少数交易：毛利的 ${pctPlain(conc, 0)} 来自最大一笔。去掉它，历史单笔均值就从 ${money(sv.meanPnl ?? 0)} 掉到 ${dropWin == null ? '—' : money(dropWin)}。尚不足以证明存在稳定 edge。`
                   : conc != null
                     ? `盈利没有过度集中:最大一笔占毛利 ${pctPlain(conc, 0)},拿掉后单笔均值 ${dropWin == null ? '—' : money(dropWin)}。`
                     : '没有毛利样本,不评估集中度。'
@@ -2067,7 +1986,27 @@ export function Dashboard(props: {
             </table>
             </details>
           </article>
-          </LayerFold>
+          </Ch>
+
+<Ch meta={whyCh('why-cross')}>
+            <CrossPanel cross={cross} />
+          </Ch>
+
+<Ch meta={whyCh('why-quality')}>
+            <article className="panel" id="quality">
+              <h3>交易质量</h3>
+              <QualityRead
+                trips={scoped}
+                winRate={winRate}
+                expectancy={expectancy}
+                profitFactor={profitFactor}
+                payoff={p.payoff}
+                filtered={filtered}
+                onWinRate={() => openInsight({ kind: 'winRate' })}
+                onExpectancy={() => openInsight({ kind: 'expectancy' })}
+              />
+              <p className="why-limit">{cover.nLine}</p>
+            </article>
         <details className="fold-block ledger-fold" id="sec-ledger">
           <summary>核算 · 对账与覆盖（与「是什么 · 可信吗」同源）</summary>
         <article className="panel" id="equity">
@@ -2294,6 +2233,145 @@ export function Dashboard(props: {
         </article>
 
         </details>
+          </Ch>
+
+<Ch meta={whyCh('why-trips')}>
+          <LayerFold
+            id="fold-trips"
+            title="逐笔明细"
+            summary={`${closed.length} 笔往返 · 成交/往返可切换`}
+            anchors={['trips', 'why-trips']}
+          >
+          <div className="table-hd" id="trips">
+            <div className="sorts">
+              {(['time', 'pnl', 'r', 'hold'] as const).map((k) => (
+                <button type="button" key={k} className={sort === k ? 'on' : ''} onClick={() => setSort(k)}>
+                  {k === 'time' ? '时间' : k === 'pnl' ? '盈亏' : k === 'r' ? 'ATR标准化' : '持仓'}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="link" onClick={() => setShowFills((v) => !v)}>
+              {showFills ? '看往返' : '查看成交'}
+            </button>
+            <button type="button" className="link" onClick={exportTrips}>
+              导出 CSV
+            </button>
+          </div>
+          {showFills ? (
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>代码</th>
+                  <th>方向</th>
+                  <th>数量</th>
+                  <th>价格</th>
+                  <th>费用</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...book.fills]
+                  .sort((a, b) => b.time.getTime() - a.time.getTime())
+                  .map((f) => (
+                    <tr key={f.id}>
+                      <td>{f.time.toLocaleString('zh-CN', { hour12: false })}</td>
+                      <td>
+                        {f.symbol}
+                        {f.kind === 'drip' ? <div className="muted">分红再投资</div> : null}
+                      </td>
+                      <td>{f.side === 'buy' ? '买' : '卖'}</td>
+                      <td>{f.qty}</td>
+                      <td>{f.price.toFixed(2)}</td>
+                      <td>{f.fees.toFixed(2)}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          ) : (
+            <>
+            <table className="grid trips">
+              <thead>
+                <tr>
+                  <th>持仓片段</th>
+                  <th>方向</th>
+                  <th>数量</th>
+                  <th>开 / 平</th>
+                  <th>净盈亏</th>
+                  <th>ATR标准化盈亏</th>
+                  <th>日线估算 MAE / MFE</th>
+                  <th>标记</th>
+                </tr>
+              </thead>
+              <tbody>
+                {closed.slice(0, showAllTrips ? undefined : 5).map((t) => (
+                  <tr
+                    key={t.id}
+                    id={`trip-${t.id}`}
+                    className={`${selected?.id === t.id || focusTrip === t.id || whyHl?.tripId === t.id ? 'on' : ''} ${dimOf(whyHl, t.symbol, t.id) ? 'is-dim' : ''}`}
+                    onClick={() => {
+                      pickWhy({ tripId: t.id, symbol: t.symbol })
+                      openTrip(t)
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <td>
+                      <b>{t.symbol}</b>
+                      <div className="muted">{t.name}</div>
+                    </td>
+                    <td>{t.side === 'long' ? '多' : '空'}</td>
+                    <td>{t.qty}</td>
+                    <td>
+                      {t.openPrice.toFixed(2)} → {t.closePrice?.toFixed(2)}
+                    </td>
+                    <td className={clsPnl(t.realizedPnl)}>{money(t.realizedPnl)}</td>
+                    <td>
+                      {t.rMultiple != null ? `${signed(t.rMultiple)}R` : '—'}
+                      {(t.rFlags ?? []).length ? <div className="tiny muted">R 口径异常</div> : null}
+                      <div className="muted">
+                        {holdLabel(t.holdMinutes)} {sessionLabel(t)}
+                        {t.annualizedReturn != null && t.holdMinutes >= 10 * 1440
+                          ? ` · 年化 ${t.annualizedReturn > 10 ? '>1000%' : pct(t.annualizedReturn)}`
+                          : ''}
+                      </div>
+                    </td>
+                    <td>
+                      {t.maePct == null || t.mfePct == null ? (
+                        <div className="muted">{t.sameDay ? '不适用 · 同日不计算' : '未提供 · 缺行情'}</div>
+                      ) : (
+                        <>
+                          <MaeBar mae={t.maePct} mfe={t.mfePct} />
+                          <div className="muted">
+                            {pct(t.maePct)} · {pct(t.mfePct)} · 估算值
+                          </div>
+                        </>
+                      )}
+                    </td>
+                    <td>
+                      {t.tags
+                        .filter((tag) => tag !== 'episode')
+                        .map((tag) => {
+                          const chip = suspectedTagLabel(t, tag)
+                          return (
+                            <em key={tag} className={`tag ${chip.kind}`} title={chip.title}>
+                              {chip.text}
+                            </em>
+                          )
+                        })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {closed.length > 5 ? (
+              <button type="button" className="link" onClick={() => setShowAllTrips((v) => !v)}>
+                {showAllTrips ? '收起' : `展开全部 ${closed.length} 笔`}
+              </button>
+            ) : null}
+            </>
+          )}
+          </LayerFold>
+          </Ch>
       </AnalysisPage>
       </div>
 
@@ -2302,6 +2380,7 @@ export function Dashboard(props: {
           cover={cover}
           space={space}
           diagnoses={diagnoses}
+          trips={closedAll}
           claimedIds={claimedIds}
           active={experimentRows.filter((e) => e.status === 'active')}
           archived={experimentRows.filter((e) => e.status === 'archived')}
@@ -2309,6 +2388,13 @@ export function Dashboard(props: {
           onChange={() => setExpTick((n) => n + 1)}
           onOpenHealth={() => setShowHealth(true)}
           onFillAccount={openAccountSupplement}
+          onOpenTrip={(id) => {
+            const t = book.episodes.find((x) => x.id === id)
+            if (t) openTrip(t)
+          }}
+          onOpenTrips={(id, label, list) =>
+            openInsight({ kind: 'group', row: group(id, label, list, list.length), trips: list })
+          }
           accountLimited={!accountOk}
         />
       </div>

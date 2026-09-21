@@ -25,9 +25,10 @@ export function CapabilityMatrix(props: {
           <tr key={g.id} className={`cap-${g.tone}`}>
             <td>{g.title}</td>
             <td>
-              <span className={`cap-dot ${g.tone}`} title={g.done ? '已有' : g.tone === 'fail' ? '缺失' : '待补'}>
+              <span className={`cap-dot ${g.tone}`} title={g.statusLabel}>
                 {g.done ? '●' : g.tone === 'fail' ? '✕' : '!'}
               </span>
+              <span className="tiny"> {g.statusLabel}</span>
             </td>
             <td className="tiny">{g.unlocks}</td>
             <td>

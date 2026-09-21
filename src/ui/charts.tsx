@@ -1,5 +1,6 @@
 import { Fragment, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { money, moneyK } from '../lib/format.ts'
+import { quantile } from '../lib/stats.ts'
 import { etDateKey } from '../lib/time.ts'
 
 export function LineChart(props: {
@@ -471,7 +472,7 @@ export function MultiLine(props: {
 }
 
 export function Scatter(props: {
-  points: Array<{ x: number; y: number; up: boolean; id: string; label?: string }>
+  points: Array<{ x: number; y: number; up: boolean; id: string; label?: string; dim?: boolean }>
   onPick: (id: string) => void
   height?: number
 }) {
@@ -510,6 +511,7 @@ export function Scatter(props: {
               cy={py(Math.max(0, p.y))}
               r={5}
               fill={p.up ? 'var(--up)' : 'var(--down)'}
+              fillOpacity={p.dim ? 0.28 : 1}
               className="dot"
               onClick={() => props.onPick(p.id)}
             >
@@ -543,27 +545,169 @@ export function Scatter(props: {
   )
 }
 
+export function ExitScatter(props: {
+  points: Array<{
+    id: string
+    x: number
+    y: number
+    r: number
+    up: boolean
+    holdId: string
+    flags: string[]
+    label?: string
+    tag?: string
+    dim?: boolean
+  }>
+  onPick: (id: string) => void
+  height?: number
+}) {
+  const uid = useId().replace(/:/g, '')
+  const clipId = `exit-main-${uid}`
+  if (!props.points.length) return <p className="tiny">没有可画的日线 MFE，无法计算退出效率。</p>
+  const w = 640
+  const h = props.height ?? 260
+  const pad = { l: 52, r: 16, t: 16, b: 36 }
+  const innerW = w - pad.l - pad.r
+  const innerH = h - pad.t - pad.b
+  const xs = props.points.map((p) => p.x)
+  const ys = props.points.map((p) => p.y)
+  const xHi = Math.max(quantile(xs, 0.95) ?? Math.max(...xs, 1), 1e-6)
+  const yLoQ = quantile(ys, 0.05) ?? Math.min(...ys, 0)
+  const yHiQ = quantile(ys, 0.95) ?? Math.max(...ys, 0)
+  const yLo = Math.min(0, yLoQ)
+  const yHi = Math.max(0, yHiQ, xHi * 0.15)
+  const isOut = (p: { x: number; y: number }) => p.x > xHi || p.y > yHi || p.y < yLo
+  const outliers = props.points
+    .filter(isOut)
+    .sort((a, b) => Math.abs(b.y) + b.x - (Math.abs(a.y) + a.x))
+    .slice(0, 6)
+  const px = (v: number) => pad.l + (Math.max(0, Math.min(v, xHi)) / (xHi || 1)) * innerW
+  const py = (v: number) => pad.t + (1 - (v - yLo) / (yHi - yLo || 1)) * innerH
+  const maxN = Math.max(...props.points.map((p) => p.r), 1)
+  const L = (x: number) => `${(x / w) * 100}%`
+  const T = (y: number) => `${(y / h) * 100}%`
+  const shape = (holdId: string, cx: number, cy: number, rr: number, fill: string, op: number, stroke: string) => {
+    if (holdId === 'd1_2') {
+      return <rect x={cx - rr} y={cy - rr} width={rr * 2} height={rr * 2} fill={fill} fillOpacity={op} stroke={stroke} strokeWidth={1.2} />
+    }
+    if (holdId === 'd3_5') {
+      const d = `M${cx} ${cy - rr} L${cx + rr} ${cy} L${cx} ${cy + rr} L${cx - rr} ${cy} Z`
+      return <path d={d} fill={fill} fillOpacity={op} stroke={stroke} strokeWidth={1.2} />
+    }
+    if (holdId === 'd6_10') {
+      const d = `M${cx} ${cy - rr} L${cx + rr} ${cy + rr} L${cx - rr} ${cy + rr} Z`
+      return <path d={d} fill={fill} fillOpacity={op} stroke={stroke} strokeWidth={1.2} />
+    }
+    if (holdId === 'd10p') {
+      return (
+        <g stroke={stroke} strokeWidth={1.6} opacity={op}>
+          <line x1={cx - rr} y1={cy} x2={cx + rr} y2={cy} />
+          <line x1={cx} y1={cy - rr} x2={cx} y2={cy + rr} />
+        </g>
+      )
+    }
+    return <circle cx={cx} cy={cy} r={rr} fill={fill} fillOpacity={op} stroke={stroke} strokeWidth={1.2} />
+  }
+  return (
+    <div>
+      <div className="svg-wrap exit-scatter-wrap">
+        <svg viewBox={`0 0 ${w} ${h}`} className="chart scatter">
+          <defs>
+            <clipPath id={clipId}>
+              <rect x={pad.l} y={pad.t} width={innerW} height={innerH} />
+            </clipPath>
+          </defs>
+          <line x1={pad.l} x2={w - pad.r} y1={py(0)} y2={py(0)} className="base-line" />
+          <line x1={px(0)} x2={px(xHi)} y1={py(0)} y2={py(xHi)} className="grid" strokeDasharray="4 3" />
+          <g clipPath={`url(#${clipId})`}>
+            {props.points.map((p) => {
+              const cx = px(p.x)
+              const cy = py(p.y)
+              const rr = 4 + Math.sqrt(p.r / maxN) * 8
+              const fill = p.up ? 'var(--up)' : 'var(--down)'
+              const stroke = p.flags.length ? 'var(--warn, #c47a1a)' : 'transparent'
+              return (
+                <g
+                  key={p.id}
+                  style={{ cursor: 'pointer' }}
+                  opacity={p.dim ? 0.28 : isOut(p) ? 0.35 : 1}
+                  onClick={() => props.onPick(p.id)}
+                >
+                  {shape(p.holdId, cx, cy, rr, fill, 0.9, stroke)}
+                  <title>{p.label}</title>
+                </g>
+              )
+            })}
+          </g>
+        </svg>
+        <div className="svg-lbls" aria-hidden>
+          <span style={{ left: L(pad.l + innerW / 2), top: T(h - 8), transform: 'translate(-50%,-50%)' }}>MFE（日线估算，美元）</span>
+          <span style={{ left: L(14), top: '50%', transform: 'translate(-50%,-50%) rotate(-90deg)' }}>已实现盈亏</span>
+        </div>
+        {outliers.length ? (
+          <div className="exit-inset">
+            <p>95% 域外</p>
+            {outliers.map((p) => (
+              <button type="button" key={p.id} onClick={() => props.onPick(p.id)}>
+                {p.tag ?? p.id} {money(p.y)}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="scatter-legend">
+        <span>主图为 95% 分位域。极端点见右上，未删除。</span>
+        <span>虚线：实现 = MFE（几何参考，不是可达收益）</span>
+        <span>描边：回吐/高 MFE 低实现等重点观察</span>
+      </div>
+    </div>
+  )
+}
+
 export function ColorScatter(props: {
-  points: Array<{ x: number; y: number; color: string; id: string; label?: string }>
+  points: Array<{ x: number; y: number; color: string; id: string; label?: string; r?: number }>
   height?: number
   xFormat?: (v: number) => string
   yFormat?: (v: number) => string
   logX?: boolean
+  vRef?: number
+  vRefLabel?: string
+  hRef?: number
+  hRefLabel?: string
+  xLabel?: string
+  yLabel?: string
+  yMin?: number
+  yMax?: number
+  shadeFrom?: number
+  shadeLabel?: string
+  opacity?: number
+  callouts?: Array<{ id: string; text: string }>
   onPick?: (id: string) => void
 }) {
   if (!props.points.length) return null
   const w = 640
   const h = props.height ?? 240
-  const pad = { l: 48, r: 14, t: 14, b: 30 }
+  const pad = { l: 52, r: 14, t: 18, b: 36 }
   const innerW = w - pad.l - pad.r
   const innerH = h - pad.t - pad.b
   const tx = (v: number) => (props.logX ? Math.log10(Math.max(v, 1e-6)) : v)
   const txs = props.points.map((p) => tx(p.x))
   const ys = props.points.map((p) => p.y)
-  const xmin = Math.min(...txs)
-  const xmax = Math.max(...txs)
-  const ymin = Math.min(...ys, 0)
-  const ymax = Math.max(...ys, 0)
+  let xmin = Math.min(...txs)
+  let xmax = Math.max(...txs)
+  if (props.vRef != null) {
+    xmin = Math.min(xmin, tx(props.vRef))
+    xmax = Math.max(xmax, tx(props.vRef))
+  }
+  if (props.shadeFrom != null) {
+    xmin = Math.min(xmin, tx(props.shadeFrom))
+    xmax = Math.max(xmax, tx(props.shadeFrom))
+  }
+  const ymin0 = props.yMin ?? Math.min(...ys, 0, props.hRef ?? 0)
+  const ymax0 = props.yMax ?? Math.max(...ys, 0, props.hRef ?? 0)
+  const ypad = props.yMin == null && (props.hRef != null || props.vRef != null) && ymax0 > ymin0 ? (ymax0 - ymin0) * 0.08 : 0
+  const ymin = ymin0 - ypad
+  const ymax = ymax0 + ypad
   const xspan = xmax - xmin || 1
   const yspan = ymax - ymin || 1
   const px = (v: number) => pad.l + ((tx(v) - xmin) / xspan) * innerW
@@ -576,19 +720,36 @@ export function ColorScatter(props: {
     : niceTicks(Math.min(...props.points.map((p) => p.x)), Math.max(...props.points.map((p) => p.x)), 4, 0)
   const L = (x: number) => `${(x / w) * 100}%`
   const T = (y: number) => `${(y / h) * 100}%`
+  const shadeX = props.shadeFrom != null ? px(props.shadeFrom) : null
   return (
     <div className="svg-wrap">
       <svg viewBox={`0 0 ${w} ${h}`} className="chart scatter" preserveAspectRatio="none">
+        {shadeX != null ? (
+          <rect x={shadeX} y={pad.t} width={Math.max(0, w - pad.r - shadeX)} height={innerH} className="how-hold-zone" />
+        ) : null}
         {yTicks.map((t) => (
           <line key={t} x1={pad.l} x2={w - pad.r} y1={py(t)} y2={py(t)} className={Math.abs(t) < 1e-9 ? 'base-line' : 'grid'} />
         ))}
+        {props.hRef != null ? (
+          <line x1={pad.l} x2={w - pad.r} y1={py(props.hRef)} y2={py(props.hRef)} className="how-href" />
+        ) : null}
+        {props.vRef != null ? (
+          <line x1={px(props.vRef)} x2={px(props.vRef)} y1={pad.t} y2={pad.t + innerH} className="how-vref" />
+        ) : null}
       </svg>
       {props.points.map((p) => (
         <button
           key={p.id}
           type="button"
           className="scatter-dot"
-          style={{ left: L(px(p.x)), top: T(py(p.y)), background: p.color }}
+          style={{
+            left: L(px(p.x)),
+            top: T(py(p.y)),
+            background: p.color,
+            width: p.r ? `${p.r * 2}px` : undefined,
+            height: p.r ? `${p.r * 2}px` : undefined,
+            opacity: props.opacity ?? 1,
+          }}
           title={p.label}
           onClick={() => props.onPick?.(p.id)}
         />
@@ -600,10 +761,34 @@ export function ColorScatter(props: {
           </span>
         ))}
         {xTickVals.map((t) => (
-          <span key={`x${t}`} style={{ left: L(px(t)), top: T(h - 14), transform: 'translate(-50%,-50%)' }}>
+          <span key={`x${t}`} style={{ left: L(px(t)), top: T(h - 18), transform: 'translate(-50%,-50%)' }}>
             {xf(t)}
           </span>
         ))}
+        {props.vRef != null && props.vRefLabel ? (
+          <span className="how-vref-cap" style={{ left: L(px(props.vRef)), top: T(pad.t + 2), transform: 'translate(-50%,0)' }}>
+            {props.vRefLabel}
+          </span>
+        ) : null}
+        {props.shadeFrom != null && props.shadeLabel ? (
+          <span className="how-shade-cap" style={{ left: L((px(props.shadeFrom) + w - pad.r) / 2), top: T(pad.t + 2) }}>
+            {props.shadeLabel}
+          </span>
+        ) : null}
+        {props.hRef != null && props.hRefLabel ? (
+          <span className="how-href-cap" style={{ left: L(w - pad.r), top: T(py(props.hRef)), transform: 'translate(-100%,-120%)' }}>
+            {props.hRefLabel}
+          </span>
+        ) : null}
+        {(props.callouts ?? []).map((c) => {
+          const p = props.points.find((x) => x.id === c.id)
+          if (!p) return null
+          return (
+            <span key={c.id} className="scatter-callout" style={{ left: L(px(p.x)), top: T(py(p.y)) }}>
+              {c.text}
+            </span>
+          )
+        })}
       </div>
     </div>
   )
@@ -774,6 +959,7 @@ export type ForestItem = {
   dim?: boolean
   lead?: boolean
   note?: string
+  status?: string
 }
 
 function forestTone(item: ForestItem, ref: number): 'up' | 'down' | 'unsure' {
@@ -795,6 +981,7 @@ export function ForestPlot(props: {
   refMark?: number
   format?: (v: number) => string
   onPick?: (id: string) => void
+  palette?: 'signed' | 'neutral'
 }) {
   const ref = props.refMark ?? 0
   const fmt = props.format ?? ((v: number) => String(v))
@@ -820,9 +1007,15 @@ export function ForestPlot(props: {
   const span = max - min
   const xPct = (v: number) => `${((v - min) / span) * 100}%`
   const ticks = niceTicks(min, max, 4, ref)
+  const hasStatus = props.items.some((item) => Boolean(item.status))
+  const withInterval = props.items.filter((item) => item.lo != null && Number.isFinite(item.lo) && item.hi != null && Number.isFinite(item.hi) && !item.unboundedHi)
+  const allCrossZero =
+    withInterval.length > 0 &&
+    withInterval.every((item) => item.lo! < ref && item.hi! > ref)
 
   return (
-    <div className="forest">
+    <div className={`forest${hasStatus ? ' forest-has-status' : ''}${allCrossZero ? ' forest-all-cross' : ''}`}>
+      {allCrossZero ? <p className="tiny forest-unsure-cap">证据不足区：所有区间均跨过 $0</p> : null}
       <div className="forest-axis" aria-hidden>
         {ticks.map((t) => (
           <span key={t} className={`forest-tick${t === ref ? ' ref' : ''}`} style={{ left: xPct(t) }}>
@@ -847,6 +1040,7 @@ export function ForestPlot(props: {
           <>
             <span className="forest-label">{item.label}</span>
             <div className="forest-track">
+              {allCrossZero ? <i className="forest-unsure-zone" style={{ left: xPct(ref) }} /> : null}
               <i className="forest-ref" style={{ left: xPct(ref) }} />
               {hasWhisker && lo != null && hi != null ? (
                 <i
@@ -870,11 +1064,11 @@ export function ForestPlot(props: {
                   ⊗
                 </i>
               ) : null}
-              {note ? <em className="forest-note">{note}</em> : null}
             </span>
+            {item.status ? <span className="forest-status">{item.status}</span> : note ? <em className="forest-note">{note}</em> : null}
           </>
         )
-        const cls = `forest-row ${tone}${item.dim ? ' dim' : ''}${item.lead || item.id === 'all' ? ' lead' : ''}`
+        const cls = `forest-row ${props.palette === 'neutral' ? 'neutral' : tone}${item.dim ? ' dim' : ''}${item.lead || item.id === 'all' ? ' lead' : ''}`
         if (props.onPick) {
           return (
             <button type="button" key={item.id} className={`${cls} as-btn`} onClick={() => props.onPick?.(item.id)}>
@@ -885,6 +1079,116 @@ export function ForestPlot(props: {
         return (
           <div key={item.id} className={cls}>
             {body}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+export function TornadoPlot(props: {
+  rows: Array<{
+    id: string
+    label: string
+    left: number
+    right: number
+    formula?: string
+  }>
+  format?: (v: number) => string
+}) {
+  if (!props.rows.length) return null
+  const fmt = props.format ?? money
+  const rows = [...props.rows].sort(
+    (a, b) => Math.max(Math.abs(b.left), Math.abs(b.right)) - Math.max(Math.abs(a.left), Math.abs(a.right)),
+  )
+  const maxAbs = Math.max(...rows.flatMap((r) => [Math.abs(r.left), Math.abs(r.right)]), 1)
+  return (
+    <div className="tornado">
+      <div className="tornado-axis tiny" aria-hidden>
+        <span />
+        <span className="tornado-axis-inner">
+          <i>参数恶化</i>
+          <i>$0</i>
+          <i>参数改善</i>
+        </span>
+        <span />
+      </div>
+      {rows.map((r) => {
+        const tip = r.formula ?? `×0.9 → ${fmt(r.left)}；×1.1 → ${fmt(r.right)}（相对冲击）`
+        return (
+          <div key={r.id} className="tornado-row">
+            <span className="tornado-k">{r.label}</span>
+            <div className="tornado-track">
+              <i className="tornado-zero" />
+              <i className="tornado-bar left" style={{ width: `${(Math.abs(r.left) / maxAbs) * 48}%` }} title={tip} />
+              <i className="tornado-bar right" style={{ width: `${(Math.abs(r.right) / maxAbs) * 48}%` }} title={tip} />
+            </div>
+            <span className="tornado-amt">
+              {fmt(r.left)} / {fmt(r.right)}
+            </span>
+          </div>
+        )
+      })}
+      <p className="tiny tornado-legend">左右条形是机械敏感性结果，不是置信区间，也不是可实现收益。</p>
+    </div>
+  )
+}
+
+export function DumbbellPlot(props: {
+  rows: Array<{
+    id: string
+    label: string
+    a: number
+    b: number
+    aLabel: string
+    bLabel: string
+    n: number
+    delta: number
+    ci?: string | null
+    note?: string
+  }>
+  format?: (v: number) => string
+}) {
+  if (!props.rows.length) return null
+  const fmt = props.format ?? money
+  const nums = props.rows.flatMap((r) => [r.a, r.b])
+  let min = Math.min(...nums)
+  let max = Math.max(...nums)
+  if (max - min < 1e-9) {
+    min -= 1
+    max += 1
+  }
+  const pad = (max - min) * 0.12
+  min -= pad
+  max += pad
+  const x = (v: number) => `${((v - min) / (max - min)) * 100}%`
+  return (
+    <div className="dumbbell">
+      {props.rows.map((r) => {
+        const lo = Math.min(r.a, r.b)
+        const hi = Math.max(r.a, r.b)
+        return (
+          <div key={r.id} className="dumbbell-row">
+            <p className="tiny">
+              {r.label} · n={r.n} · 差 {fmt(r.delta)}
+              {r.ci ? `（${r.ci}）` : ''}
+            </p>
+            <div className="dumbbell-track">
+              <i className="dumbbell-line" style={{ left: x(lo), width: `calc(${x(hi)} - ${x(lo)})` }} />
+              <i className="dumbbell-dot a" style={{ left: x(r.a) }} title={`${r.aLabel} ${fmt(r.a)}`} />
+              <i className="dumbbell-dot b" style={{ left: x(r.b) }} title={`${r.bLabel} ${fmt(r.b)}`} />
+              <span className="dumbbell-end a" style={{ left: x(r.a) }}>
+                {r.aLabel} {fmt(r.a)}
+              </span>
+              <span className="dumbbell-end b" style={{ left: x(r.b) }}>
+                {r.bLabel} {fmt(r.b)}
+              </span>
+            </div>
+            <p className="tiny">
+              落后 {fmt(r.delta)}
+              {r.ci ? `（${r.ci}）` : ''}
+              {r.note ? ` · ${r.note}` : ''}
+            </p>
           </div>
         )
       })}
@@ -1916,9 +2220,10 @@ export function WaterfallFlow(props: {
 }
 
 export function Waterfall(props: {
-  steps: Array<{ id: string; label: string; delta: number; total?: boolean; note?: string }>
+  steps: Array<{ id: string; label: string; delta: number; total?: boolean; note?: string; dim?: boolean }>
   format?: (v: number) => string
   height?: number
+  onPick?: (id: string) => void
 }) {
   if (!props.steps.length) return null
   const fmt = props.format ?? money
@@ -1970,7 +2275,20 @@ export function Waterfall(props: {
           const last = Boolean(r.total) || i === rows.length - 1
           const fill = last ? 'var(--gold)' : r.delta >= 0 ? 'var(--up)' : 'var(--down)'
           const bar = (
-            <rect className="cbar" x={x} y={y} width={bw} height={bh} rx={2} fill={fill}>
+            <rect
+              className="cbar"
+              x={x}
+              y={y}
+              width={bw}
+              height={bh}
+              rx={2}
+              fill={fill}
+              fillOpacity={r.dim ? 0.28 : 1}
+              style={{ cursor: props.onPick && !r.total ? 'pointer' : 'default' }}
+              onClick={() => {
+                if (!r.total) props.onPick?.(r.id)
+              }}
+            >
               <title>{`${r.label} ${fmt(r.total ? r.to : r.delta)}`}</title>
             </rect>
           )
@@ -2015,7 +2333,7 @@ export function Waterfall(props: {
   )
 }
 
-type TreeItem = { id: string; label: string; value: number; up: boolean; sub?: string }
+type TreeItem = { id: string; label: string; value: number; up: boolean; sub?: string; dim?: boolean }
 type TreeRect = TreeItem & { x: number; y: number; w: number; h: number }
 
 /**
@@ -2115,7 +2433,7 @@ export function Treemap(props: {
                 width={Math.max(0, r.w - 1)}
                 height={Math.max(0, r.h - 1)}
                 fill={r.up ? 'var(--up)' : 'var(--down)'}
-                fillOpacity={strength}
+                fillOpacity={(r.dim ? 0.28 : 1) * strength}
                 stroke="var(--bg)"
                 strokeWidth={1}
               />

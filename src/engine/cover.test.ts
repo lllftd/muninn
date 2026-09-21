@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { loadSampleBook } from '../fixtures/sampleBook.ts'
 import { diagnose } from './diagnose.ts'
 import { buildHealth } from './health.ts'
-import { beOf, buildCover, formatBe, waterfallOf } from './cover.ts'
+import { beOf, buildCover, formatBe, pathCoverLine, symbolPnl, waterfallOf, whyLead } from './cover.ts'
 import { tabForAnchor, tabFromView } from '../ui/views.ts'
 
 describe('buildCover', () => {
@@ -18,9 +18,76 @@ describe('buildCover', () => {
     expect(cover.gaps[0].id).toBe('flow')
     expect(cover.gaps[0].done).toBe(true)
     expect(cover.summaries.what).toMatch(/数据/)
-    expect(cover.summaries.why).toMatch(/主因/)
-    expect(cover.summaries.how).toMatch(/空间|实验/)
+    expect(cover.summaries.why).toMatch(/行为问题|候选观察/)
+    expect(cover.summaries.why).not.toMatch(/个主因/)
+    expect(cover.luckLine).not.toMatch(/体系偏亏/)
+    expect(cover.summaries.how).toMatch(/理论回吐上限|已验证改善|实验/)
+    expect(cover.summaries.how).not.toMatch(/空间 \+/)
+    expect(cover.howLead).toMatch(/不是可实现收益|没有已验证/)
+    const give = cover.queue.find((r) => r.id === 'giveback')
+    if (give) {
+      expect(give.kind).toBe('theoretical')
+      expect(give.recoverableKind).toBe('theoretical')
+      expect(give.status).toMatch(/blocked|pending/)
+      expect(give.finding).toMatch(/日线路径可用/)
+      expect(give.finding).toMatch(/浮盈回吐分析有效/)
+    }
+    const hold = cover.queue.find((r) => r.id === 'hold-h3')
+    if (hold) {
+      expect(hold.kind).toBe('historical')
+      expect(hold.recoverableKind).toBe('mechanical')
+      expect(hold.capLines?.join(' ')).toMatch(/完全避开该组/)
+      expect(hold.capLines?.join(' ')).toMatch(/未知，等待影子实验/)
+      expect(hold.finding).toMatch(/不能把/)
+    }
+    const stops = cover.queue.find((r) => r.id === 'stops')
+    expect(stops?.status).toMatch(/rejected|verified/)
+    const intra = cover.queue.find((r) => r.id === 'intraday')
+    if (intra) {
+      expect(intra.canClaim).toBe(false)
+      expect(intra.finding).toMatch(/<1 日|日内/)
+      expect(intra.finding).toMatch(/不能用长持仓数字支持日内/)
+    }
+    const maeGap = cover.gaps.find((g) => g.id === 'mae')
+    if (maeGap && !maeGap.done && book.credibility.maeMfeComputableShare > 0) {
+      expect(maeGap.statusLabel).toMatch(/部分覆盖/)
+      expect(maeGap.tone).not.toBe('fail')
+    }
     expect(cover.luckLine.length).toBeGreaterThan(4)
+    expect(cover.whyLead.length).toBeGreaterThan(20)
+    expect(cover.whyLead).toMatch(/本期/)
+  })
+
+  it('splits path coverage from floated giveback n', () => {
+    const line = pathCoverLine({ nFloated: 20, nClosed: 33, nPath: 21, meanRate: 0.83 })
+    expect(line).toMatch(/日线路径可用 21\/33/)
+    expect(line).toMatch(/覆盖率 64%/)
+    expect(line).toMatch(/浮盈回吐分析有效 20\/33/)
+    expect(line).toMatch(/有效率 61%/)
+    expect(line).toMatch(/另 1 笔有路径但未出现浮盈/)
+    expect(line).toMatch(/另 12 笔因同日或缺行情/)
+  })
+
+  it('builds whyLead from symbols and diagnoses without hardcoded tickers', () => {
+    const book = loadSampleBook()
+    const items = diagnose(book)
+    const lead = whyLead(book, items, buildHealth(book))
+    const signs = symbolPnl(book)
+    expect(lead).toMatch(/亏损|盈利/)
+    expect(lead).toMatch(/毛利/)
+    const top = signs.filter((s) => s.pnl > 0)[0]
+    const second = signs.filter((s) => s.pnl > 0)[1]
+    const grossWin = signs.filter((s) => s.pnl > 0).reduce((s, x) => s + x.pnl, 0)
+    if (top) expect(lead).toContain(top.symbol)
+    if (second && grossWin > 0 && second.pnl < 0.15 * grossWin) {
+      expect(lead).not.toContain(second.symbol)
+    }
+    if (signs.some((s) => s.pnl < 0)) expect(lead).toMatch(/亏损/)
+    expect(lead).not.toMatch(/分散在/)
+    if (items.some((d) => d.id === 'space-giveback')) {
+      expect(lead).toMatch(/浮盈/)
+      expect(lead).toMatch(/转亏|回吐/)
+    }
   })
 
   it('computes breakeven gap from payoff', () => {

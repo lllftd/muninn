@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { evaluateExperiment } from './experiments.ts'
-import { matchesConstraint, type ExperimentRecord } from '../lib/experiments.ts'
+import {
+  isDay4Shadow,
+  isMisalignedHoldExperiment,
+  realignToDay4Shadow,
+  matchesConstraint,
+  type ExperimentRecord,
+} from '../lib/experiments.ts'
 import type { RoundTrip } from '../types.ts'
 
 function trip(over: Partial<RoundTrip> & Pick<RoundTrip, 'id'>): RoundTrip {
@@ -56,5 +62,122 @@ describe('evaluateExperiment', () => {
     expect(ev.verdict).toBe('improved')
     expect(ev.matchN).toBe(12)
     expect(ev.changedShare).toBe(1)
+  })
+
+  it('shadow-hold waits when new trades have no path', () => {
+    const ev = evaluateExperiment(
+      exp({ constraint: { kind: 'shadow-hold', days: 5 }, claimedTripIds: [] }),
+      [trip({ id: 'n1', realizedPnl: 8, pathQuality: 'missing_bars' })],
+    )
+    expect(ev.verdict).toBe('insufficient')
+    expect(ev.note).toMatch(/等待|影子|路径/)
+  })
+
+  it('shadow-hold scores same-trade delta via replayHold, not the old baseline', () => {
+    const t = trip({
+      id: 'hold',
+      symbol: 'AAA',
+      openPrice: 100,
+      qty: 1,
+      fees: 0,
+      realizedPnl: -20,
+      pathQuality: 'daily_estimate',
+      openTime: new Date('2024-01-02T15:00:00Z'),
+      closeTime: new Date('2024-01-08T21:00:00Z'),
+    })
+    const bars = {
+      AAA: [
+        { date: '2024-01-02', open: 100, high: 101, low: 99, close: 100, volume: 1 },
+        { date: '2024-01-03', open: 100, high: 104, low: 100, close: 103, volume: 1 },
+        { date: '2024-01-04', open: 103, high: 103, low: 90, close: 91, volume: 1 },
+        { date: '2024-01-08', open: 91, high: 92, low: 80, close: 80, volume: 1 },
+      ],
+    }
+    const ev = evaluateExperiment(
+      exp({ constraint: { kind: 'shadow-hold', days: 2 }, claimedTripIds: [], baselineExpectancy: 999 }),
+      [t],
+      undefined,
+      bars,
+    )
+    expect(ev.shadowN).toBe(1)
+    expect(ev.delta).toBeCloseTo(23)
+    expect(ev.note).not.toMatch(/基线/)
+    expect(ev.pairs?.map((p) => p.id)).toEqual(['hold'])
+    expect(ev.funnel?.priced).toBe(1)
+  })
+
+  it('does not count short holds as zero-delta pairs', () => {
+    const short = trip({
+      id: 'short',
+      symbol: 'BBB',
+      openPrice: 50,
+      qty: 1,
+      fees: 0,
+      realizedPnl: -8,
+      pathQuality: 'daily_estimate',
+      openTime: new Date('2024-01-02T15:00:00Z'),
+      closeTime: new Date('2024-01-02T18:00:00Z'),
+      holdMinutes: 180,
+    })
+    const long = trip({
+      id: 'hold',
+      symbol: 'AAA',
+      openPrice: 100,
+      qty: 1,
+      fees: 0,
+      realizedPnl: -20,
+      pathQuality: 'daily_estimate',
+      openTime: new Date('2024-01-02T15:00:00Z'),
+      closeTime: new Date('2024-01-08T21:00:00Z'),
+      holdMinutes: 6 * 1440,
+    })
+    const bars = {
+      AAA: [
+        { date: '2024-01-02', open: 100, high: 101, low: 99, close: 100, volume: 1 },
+        { date: '2024-01-03', open: 100, high: 104, low: 100, close: 103, volume: 1 },
+        { date: '2024-01-04', open: 103, high: 103, low: 90, close: 91, volume: 1 },
+        { date: '2024-01-08', open: 91, high: 92, low: 80, close: 80, volume: 1 },
+      ],
+      BBB: [{ date: '2024-01-02', open: 50, high: 51, low: 49, close: 49, volume: 1 }],
+    }
+    const ev = evaluateExperiment(
+      exp({ constraint: { kind: 'shadow-hold', days: 2 }, claimedTripIds: [] }),
+      [short, long],
+      undefined,
+      bars,
+    )
+    expect(ev.pairs?.map((p) => p.id)).toEqual(['hold'])
+    expect(ev.funnel?.held).toBe(1)
+    expect(ev.funnel?.priced).toBe(1)
+    expect(ev.shadowN).toBe(1)
+  })
+})
+
+describe('day-4 realign', () => {
+  it('treats h1 hold as misaligned and converts to day-4 shadow with $0 baseline', () => {
+    const store: Record<string, string> = {}
+    globalThis.localStorage = {
+      getItem: (k: string) => store[k] ?? null,
+      setItem: (k: string, v: string) => {
+        store[k] = v
+      },
+      removeItem: (k: string) => {
+        delete store[k]
+      },
+      clear: () => {
+        for (const k of Object.keys(store)) delete store[k]
+      },
+      get length() {
+        return Object.keys(store).length
+      },
+      key: (i: number) => Object.keys(store)[i] ?? null,
+    }
+    const old = exp({ constraint: { kind: 'hold', bucket: 'h1' }, baselineExpectancy: -64 })
+    expect(isMisalignedHoldExperiment(old.constraint)).toBe(true)
+    const next = realignToDay4Shadow(old, 'time-hold-h3')
+    expect(isDay4Shadow(next.constraint)).toBe(true)
+    expect(next.baselineExpectancy).toBe(0)
+    expect(next.diagnosisId).toBe('time-hold-h3')
+    expect(next.hypothesis).toMatch(/第 4 个交易日收盘/)
   })
 })

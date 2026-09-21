@@ -549,18 +549,29 @@ function evOf(trips: RoundTrip[]) {
   return { n, p, W, L, ev: p * W - (1 - p) * L }
 }
 
-function leverDeltas(trips: RoundTrip[]): Record<EvLever['id'], number> | null {
+function leverDeltas(trips: RoundTrip[], dir: 'up' | 'down' = 'up'): Record<EvLever['id'], number> | null {
   const base = evOf(trips)
   if (!base) return null
   const { n, p, W, L, ev } = base
-  const pWin = Math.min(0.99, p * 1.1)
-  const qLoss = Math.max(0.01, (1 - p) * 0.9)
+  if (dir === 'up') {
+    const pWin = Math.min(0.99, p * 1.1)
+    const qLoss = Math.max(0.01, (1 - p) * 0.9)
+    const pFromQ = 1 - qLoss
+    return {
+      winRate: (pWin * W - (1 - pWin) * L - ev) * n,
+      avgWin: (p * (W * 1.1) - (1 - p) * L - ev) * n,
+      lossRate: (pFromQ * W - qLoss * L - ev) * n,
+      avgLoss: (p * W - (1 - p) * (L * 0.9) - ev) * n,
+    }
+  }
+  const pWin = Math.max(0.01, p * 0.9)
+  const qLoss = Math.min(0.99, (1 - p) * 1.1)
   const pFromQ = 1 - qLoss
   return {
     winRate: (pWin * W - (1 - pWin) * L - ev) * n,
-    avgWin: (p * (W * 1.1) - (1 - p) * L - ev) * n,
+    avgWin: (p * (W * 0.9) - (1 - p) * L - ev) * n,
     lossRate: (pFromQ * W - qLoss * L - ev) * n,
-    avgLoss: (p * W - (1 - p) * (L * 0.9) - ev) * n,
+    avgLoss: (p * W - (1 - p) * (L * 1.1) - ev) * n,
   }
 }
 
@@ -681,15 +692,19 @@ export function buildSpace(trips: RoundTrip[], bars: Record<string, Bar[]> = {})
 
   const leverIds: Array<EvLever['id']> = ['winRate', 'avgWin', 'lossRate', 'avgLoss']
   const labels: Record<EvLever['id'], { label: string; shock: string }> = {
-    winRate: { label: '胜率', shock: '相对 +10%' },
-    avgWin: { label: '均盈', shock: '相对 +10%' },
-    lossRate: { label: '败率', shock: '相对 −10%' },
-    avgLoss: { label: '均亏', shock: '相对 −10%' },
+    winRate: { label: '胜率', shock: '相对 ±10%（不是 10 个百分点）' },
+    avgWin: { label: '平均盈利', shock: '相对 ±10%' },
+    lossRate: { label: '亏损交易占比', shock: '相对 ±10%（不是 10 个百分点）' },
+    avgLoss: { label: '平均亏损', shock: '相对 ±10%' },
   }
-  const point = leverDeltas(closed)
+  const point = leverDeltas(closed, 'up')
+  const worsePoint = leverDeltas(closed, 'down')
   const evLevers: EvLever[] = leverIds.map((id) => {
     const samples = point
-      ? clusterBootstrapSamples(clustersOf(closed), (items) => leverDeltas(items)?.[id] ?? null, BOOTSTRAP_SEED + id.length, SPACE_ROUNDS)
+      ? clusterBootstrapSamples(clustersOf(closed), (items) => leverDeltas(items, 'up')?.[id] ?? null, BOOTSTRAP_SEED + id.length, SPACE_ROUNDS)
+      : []
+    const worseSamples = worsePoint
+      ? clusterBootstrapSamples(clustersOf(closed), (items) => leverDeltas(items, 'down')?.[id] ?? null, BOOTSTRAP_SEED + id.length + 17, SPACE_ROUNDS)
       : []
     return {
       id,
@@ -697,6 +712,8 @@ export function buildSpace(trips: RoundTrip[], bars: Record<string, Bar[]> = {})
       shock: labels[id].shock,
       delta: point?.[id] ?? 0,
       deltaCi: ci80(samples),
+      worseDelta: worsePoint?.[id] ?? 0,
+      worseDeltaCi: ci80(worseSamples),
     }
   })
   evLevers.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))

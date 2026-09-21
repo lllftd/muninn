@@ -543,6 +543,8 @@ export type EvLever = {
   shock: string
   delta: number
   deltaCi: SpaceCi | null
+  worseDelta: number
+  worseDeltaCi: SpaceCi | null
 }
 
 export type ReplayFamily = 'trail' | 'hold' | 'open30'

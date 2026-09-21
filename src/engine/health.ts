@@ -17,6 +17,7 @@ export type HealthReport = {
   score: number
   imported: number
   total: number
+  maeShare: number
   tasks: HealthTask[]
   coverage: CoverageRow[]
 }
@@ -61,8 +62,11 @@ export function buildHealth(book: Book): HealthReport {
     },
     {
       id: 'mae',
-      title: '日线路程覆盖 MAE / MFE',
-      detail: `当前可计算份额 ${Math.round(mae * 100)}%。同日单和缺行情的不估。`,
+      title: mae <= 0 ? '日线路程覆盖 MAE / MFE' : mae >= 0.7 ? '日线路程覆盖 MAE / MFE' : '日线路径部分覆盖 MAE / MFE',
+      detail:
+        mae <= 0
+          ? '当前没有可计算的日线路径。同日单和缺行情的不估。'
+          : `当前可计算份额 ${Math.round(mae * 100)}%。${mae < 0.7 ? '这是部分覆盖，不是缺失。' : ''}同日单和缺行情的不估。`,
       unlocks: '捕获率 / 回吐 / 日线估算退出质量',
       done: mae >= 0.7,
     },
@@ -87,7 +91,7 @@ export function buildHealth(book: Book): HealthReport {
     ),
   )
 
-  const label = `覆盖 ${Math.round(score * 100)}%`
+  const label = `账户层数据覆盖 ${Math.round(score * 100)}%`
 
-  return { tone, label, score, imported, total, tasks, coverage }
+  return { tone, label, score, imported, total, maeShare: mae, tasks, coverage }
 }

@@ -12,17 +12,13 @@ import type { CrossReport } from '../engine/cross.ts'
 import type { Diagnosis } from '../engine/diagnose.ts'
 import type { GroupRow } from '../types.ts'
 import { type ProPrefs } from '../lib/proPrefs.ts'
-import { WhyDiagnoses } from './ReviewHome.tsx'
+import { WhyLead } from './ReviewHome.tsx'
+import { EXPLORE_BANNER, type WhyChapterMeta, type WhyRole } from './whyNav.ts'
+import type { WhyLeadFacts } from './whyViz.ts'
 
-/**
- * L1/L2 折叠层。用受控 fold 而非原生 <details>,因为规范要求"深链可展开":
- * flash(anchor) 命中折叠区内部锚点时,要能先把折叠区打开再滚动。原生 <details>
- * 在 scrollIntoView 时不会自动打开。默认态:L1/L2 全部折叠(折叠 ≠ 删除)。
- */
 type FoldCtl = {
   isOpen: (id: string) => boolean
   toggle: (id: string) => void
-  /** 注册"锚点 → 所属折叠区",供 flash 深链时反查并展开。 */
   register: (memberId: string, foldId: string) => void
   open: (id: string) => void
 }
@@ -30,10 +26,8 @@ const FoldContext = createContext<FoldCtl | null>(null)
 
 export function LayerFold(props: {
   id: string
-  /** 折叠区标题——折叠态也带摘要,让人知道里面有什么。 */
   title: string
   summary: string
-  /** 折叠区内可被深链命中的锚点 id,用于 flash 反查展开。 */
   anchors?: string[]
   children: ReactNode
 }) {
@@ -43,7 +37,6 @@ export function LayerFold(props: {
     if (!ctl) return
     ctl.register(props.id, props.id)
     for (const a of props.anchors ?? []) ctl.register(a, props.id)
-    // anchors 是稳定字面量数组,注册一次即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   return (
@@ -56,6 +49,25 @@ export function LayerFold(props: {
         <span className="layer-fold-sum">{props.summary}</span>
       </button>
       {open ? <div className="layer-fold-body">{props.children}</div> : null}
+    </section>
+  )
+}
+
+export function WhyChapter(props: {
+  id: string
+  title: string
+  status: string
+  role: WhyRole
+  children: ReactNode
+}) {
+  return (
+    <section id={props.id} className={`why-chapter role-${props.role}`}>
+      <header className="why-ch-hd">
+        <h2>{props.title}</h2>
+        <span className={`why-st why-st-${props.role}`}>{props.status}</span>
+      </header>
+      {props.role === 'explore' ? <p className="why-explore-banner">{EXPLORE_BANNER}</p> : null}
+      <div className="why-ch-body">{props.children}</div>
     </section>
   )
 }
@@ -96,59 +108,13 @@ function CrossTable(props: { title: string; rows: GroupRow[] }) {
   )
 }
 
-type TocItem = { id: string; label: string; level: 0 | 1; group: TocGroup }
-type TocGroup = '结论' | '切面' | '查账'
-
-const CONC_IDS = new Set(['structure-max-win', 'risk-concentrate'])
-const QUALITY_IDS = new Set(['payoff-highlight'])
-
-/** L1/L2 折叠区默认全部折叠。key = LayerFold id。 */
-const DEFAULT_FOLDS: Record<string, boolean> = {
-  'fold-freq': false,
-  'fold-behavior': false,
-  'fold-luck': false,
-  'fold-trips': false,
-  'cross-fold': false,
+function tabsOffset() {
+  const el = document.querySelector('.sticky-tabs')
+  return (el instanceof HTMLElement ? el.getBoundingClientRect().height : 48) + 10
 }
 
-function whyToc(diagnoses: Diagnosis[]) {
-  const impactAll = diagnoses.filter(
-    (d) =>
-      d.section === 'impact' &&
-      d.id !== 'luck-loss-mass' &&
-      d.tone !== 'highlight' &&
-      !CONC_IDS.has(d.id) &&
-      !QUALITY_IDS.has(d.id),
-  )
-  const observe =
-    impactAll.some((d) => !(d.factConfidence === 'high' || d.extrapolationConfidence !== 'low')) ||
-    diagnoses.some((d) => d.section === 'observe' && !CONC_IDS.has(d.id) && !QUALITY_IDS.has(d.id))
-  const items: TocItem[] = [
-    // 结论:默认全展开
-    { id: 'why-impact', label: '主因', level: 0, group: '结论' },
-  ]
-  // 低置信观察实际渲染在主因卡区(结论组),导航归属跟随实际位置。
-  if (observe) items.push({ id: 'why-observe', label: '低置信观察', level: 1, group: '结论' })
-  items.push(
-    // 交易质量、实力还是运气 与主因平级(都是结论),用 level 0;只有低置信观察嵌在主因下用 level 1。
-    { id: 'quality', label: '交易质量', level: 0, group: '结论' },
-    // 「实力还是运气」结论条即运气检验的入口:点它滚到结论,往下就是运气检验详图。
-    // 不再单列切面组的「运气检验」,避免同一件事(结论+证据)在 TOC 里出现两次。
-    { id: 'luck-zone', label: '实力还是运气', level: 0, group: '结论' },
-  )
-  // 切面:默认折叠
-  items.push(
-    { id: 'fold-freq', label: '持仓与频率', level: 0, group: '切面' },
-    { id: 'fold-behavior', label: '行为', level: 0, group: '切面' },
-    // 交叉归因也是切面的顶级项,平级于持仓与频率/行为。
-    { id: 'cross', label: '交叉归因', level: 0, group: '切面' },
-  )
-  // 查账:默认折叠
-  items.push(
-    { id: 'fold-trips', label: '逐笔明细', level: 0, group: '查账' },
-    { id: 'sec-ledger', label: '核算 · 对账与覆盖', level: 0, group: '查账' },
-  )
-  return items
+const DEFAULT_FOLDS: Record<string, boolean> = {
+  'fold-trips': false,
 }
 
 export function AnalysisPage(props: {
@@ -159,15 +125,19 @@ export function AnalysisPage(props: {
   cross: CrossReport
   diagnoses: Diagnosis[]
   onEvidence: (anchor: string) => void
-  /** 透传给主因卡的内嵌证据图工厂(证据就地)。 */
-  chartFor?: (d: Diagnosis) => ReactNode
+  whyLead: string
+  leadFacts: WhyLeadFacts
+  coverage: string
+  nLine: string
+  chapters: WhyChapterMeta[]
   children: ReactNode
 }) {
-  const toc = useMemo(() => whyToc(props.diagnoses), [props.diagnoses])
+  const toc = props.chapters
   const [on, setOn] = useState(toc[0]?.id ?? '')
+  const [progress, setProgress] = useState(0)
   const hold = useRef(false)
+  const mainRef = useRef<HTMLDivElement>(null)
 
-  // 折叠区开合状态。默认按 DEFAULT_FOLDS(L1/L2 全折叠),并从 URL hash 恢复分享的展开态。
   const [openFolds, setOpenFolds] = useState<Record<string, boolean>>(() => {
     const base = { ...DEFAULT_FOLDS }
     if (typeof window !== 'undefined') {
@@ -177,7 +147,6 @@ export function AnalysisPage(props: {
     }
     return base
   })
-  // 锚点 → 所属折叠区,LayerFold 挂载时登记,供深链反查展开。
   const anchorFold = useRef<Record<string, string>>({})
   const fold: FoldCtl = useMemo(
     () => ({
@@ -192,7 +161,6 @@ export function AnalysisPage(props: {
   )
 
   const flash = (id: string) => {
-    // 深链命中折叠区内部锚点时,先展开其所属折叠区,再滚动——原生 <details> 做不到这点。
     const foldId = anchorFold.current[id]
     if (foldId) setOpenFolds((s) => (s[foldId] ? s : { ...s, [foldId]: true }))
     const doScroll = () => {
@@ -200,29 +168,25 @@ export function AnalysisPage(props: {
       if (!el) return
       hold.current = true
       setOn(id)
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      const top = Math.max(0, el.getBoundingClientRect().top + window.scrollY - 64)
-      const scroller = document.scrollingElement
-      if (scroller && Math.abs(scroller.scrollTop - top) > 8) scroller.scrollTo({ top, behavior: 'smooth' })
+      const top = Math.max(0, el.getBoundingClientRect().top + window.scrollY - tabsOffset())
+      document.scrollingElement?.scrollTo({ top, behavior: 'smooth' })
       el.classList.add('anchor-flash')
       window.setTimeout(() => el.classList.remove('anchor-flash'), 1600)
       window.setTimeout(() => {
         hold.current = false
       }, 900)
     }
-    // 折叠区展开后 DOM 才挂载目标元素,等一帧再滚。
     if (foldId && !(openFolds[foldId] ?? true)) window.setTimeout(doScroll, 60)
     else doScroll()
   }
 
-  // 展开态写入 URL hash(?open=a,b),满足"折叠状态可分享、可深链"。
   useEffect(() => {
     if (typeof window === 'undefined') return
     const opened = Object.keys(openFolds).filter((k) => openFolds[k])
     const base = window.location.hash.replace(/^#/, '').split('&')[0] || ''
-    const next = opened.length ? `#${base}&open=${opened.join(',')}` : base ? `#${base}` : ''
+    const nextHash = opened.length ? `#${base}&open=${opened.join(',')}` : base ? `#${base}` : ''
     const cur = window.location.hash
-    if (next !== cur) window.history.replaceState(null, '', next || window.location.pathname + window.location.search)
+    if (nextHash !== cur) window.history.replaceState(null, '', nextHash || window.location.pathname + window.location.search)
   }, [openFolds])
 
   useEffect(() => {
@@ -232,7 +196,8 @@ export function AnalysisPage(props: {
   }, [props.highlight])
 
   useEffect(() => {
-    const els = toc.map((item) => document.getElementById(item.id)).filter((el): el is HTMLElement => Boolean(el))
+    const ids = toc.map((item) => item.id)
+    const els = ids.map((id) => document.getElementById(id)).filter((el): el is HTMLElement => Boolean(el))
     if (!els.length) return
     const seen = new Map<string, boolean>()
     const pick = () => {
@@ -244,15 +209,80 @@ export function AnalysisPage(props: {
         for (const e of entries) seen.set(e.target.id, e.isIntersecting)
         if (!hold.current) pick()
       },
-      { rootMargin: '-18% 0px -68% 0px', threshold: 0 },
+      { rootMargin: `-${tabsOffset()}px 0px -70% 0px`, threshold: 0 },
     )
     for (const el of els) obs.observe(el)
     return () => obs.disconnect()
   }, [toc])
 
+  useEffect(() => {
+    const onScroll = () => {
+      const main = mainRef.current
+      if (!main) return
+      const start = main.offsetTop
+      const span = Math.max(main.scrollHeight - window.innerHeight, 1)
+      const p = Math.min(1, Math.max(0, (window.scrollY - start) / span))
+      setProgress(p)
+    }
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
+  const idx = Math.max(0, toc.findIndex((c) => c.id === on))
+  const prev = toc[idx - 1]
+  const nextCh = toc[idx + 1]
+
+  return (
+    <FoldContext.Provider value={fold}>
+      <div className="analysis-page">
+        <nav className="why-toc print-hide" aria-label="为什么目录">
+          <div className="why-progress" aria-hidden>
+            <b>
+              <i style={{ width: `${Math.round(progress * 100)}%` }} />
+            </b>
+            <span>阅读进度 {Math.round(progress * 100)}%</span>
+          </div>
+          {toc.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              className={`${on === item.id ? 'on' : ''} toc-${item.role}`}
+              onClick={() => flash(item.id)}
+            >
+              <b>{item.label}</b>
+              <em className={`why-st why-st-${item.role}`}>{item.status}</em>
+            </button>
+          ))}
+          <div className="why-toc-nav">
+            <button type="button" disabled={!prev} onClick={() => prev && flash(prev.id)}>
+              上一章
+            </button>
+            <button type="button" disabled={!nextCh} onClick={() => nextCh && flash(nextCh.id)}>
+              下一章
+            </button>
+          </div>
+        </nav>
+        <div className="analysis-main" ref={mainRef}>
+          <WhyLead text={props.whyLead} facts={props.leadFacts} coverage={props.coverage} nLine={props.nLine} />
+          {props.children}
+          <div className="why-fab print-hide">
+            <button type="button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+              回顶部
+            </button>
+            <button type="button" onClick={() => on && flash(on)}>
+              回本章结论
+            </button>
+          </div>
+        </div>
+      </div>
+    </FoldContext.Provider>
+  )
+}
+
+export function CrossPanel(props: { cross: CrossReport }) {
   const crossOk = props.cross.symbolHold.some((r) => r.n >= 5) || props.cross.weekdayRegime.some((r) => r.n >= 5)
-  const groups: TocGroup[] = ['结论', '切面', '查账']
-  const cross = (
+  return (
     <>
       <p className="tiny">
         {crossOk ? '只列出 n≥5 的格子。其余交叉太薄，不报均值。' : '样本太薄，交叉格子说不出可引用的均值。'}
@@ -262,44 +292,6 @@ export function AnalysisPage(props: {
         <CrossTable title="星期 × 频率" rows={props.cross.weekdayRegime} />
       </div>
     </>
-  )
-  return (
-    <FoldContext.Provider value={fold}>
-      <div className="analysis-page">
-        <nav className="why-toc print-hide" aria-label="为什么目录">
-          {groups.map((g) => {
-            const items = toc.filter((t) => t.group === g)
-            if (!items.length) return null
-            return (
-              <div className="toc-group" key={g}>
-                <p className="toc-group-hd">{g}</p>
-                {items.map((item) => (
-                  <button
-                    type="button"
-                    key={item.id}
-                    className={`${on === item.id ? 'on' : ''} ${item.level ? 'sub' : ''}`}
-                    onClick={() => flash(item.id)}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            )
-          })}
-        </nav>
-        <div className="analysis-main">
-          <WhyDiagnoses diagnoses={props.diagnoses} onEvidence={props.onEvidence} chartFor={props.chartFor} />
-          {/* cross 交叉归因作为一个可复用节点传给 children 布局(Dashboard 通过 slot 决定位置)。
-              这里直接放在行为切面之后。 */}
-          <div id="why-a">{props.children}</div>
-          <LayerFold id="cross-fold" title="交叉归因" summary="标的×持仓档 · 星期×频率" anchors={['cross']}>
-            <section className="analysis-block" id="cross">
-              {cross}
-            </section>
-          </LayerFold>
-        </div>
-      </div>
-    </FoldContext.Provider>
   )
 }
 

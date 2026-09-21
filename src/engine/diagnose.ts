@@ -1,6 +1,6 @@
 import { mean } from '../lib/stats.ts'
 import { money, pctPlain } from '../lib/format.ts'
-import type { ExperimentConstraint } from '../lib/experiments.ts'
+import { DAY4_SHADOW_DAYS, DAY4_SHADOW_HYPOTHESIS, type ExperimentConstraint } from '../lib/experiments.ts'
 import { DEFAULT_PRO_PREFS, type ProPrefs } from '../lib/proPrefs.ts'
 import { buildSpace } from './space.ts'
 import type { Book, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
@@ -325,12 +325,10 @@ export function diagnose(book: Book, prefs: ProPrefs = DEFAULT_PRO_PREFS): Diagn
   }
 
   const worstHold = worstGroup(book.checkup.holdBuckets, 5)
-  const bestHold = bestGroup(book.checkup.holdBuckets, 5)
-  if (worstHold && worstHold.expectancy != null && worstHold.expectancy < 0 && bestHold && bestHold.id !== worstHold.id && bestHold.expectancy != null) {
+  if (worstHold && worstHold.expectancy != null && worstHold.expectancy < 0) {
     const fact = groupFact(worstHold.n)
     const extra = groupExtra(worstHold.n, prefs)
-    const keep = bestHold.id as 'h1' | 'h2' | 'h3'
-    const pdtNote = keep === 'h1' ? ` ${PDT}` : ''
+    const shadow = worstHold.id === 'h3'
     out.push(
       pack({
         id: `time-hold-${worstHold.id}`,
@@ -344,12 +342,16 @@ export function diagnose(book: Book, prefs: ProPrefs = DEFAULT_PRO_PREFS): Diagn
         factConfidence: fact,
         extrapolationConfidence: extra,
         n: worstHold.n,
-        experiment: {
-          hypothesis: `若${bestHold.label}更站得住，未来一段时间靠近该档时，新样本单笔均值应不低于当前基线。`,
-          constraint: { kind: 'hold', bucket: keep },
-          targetN: 20,
-        },
-        next: `建议实验：未来 20 笔靠近「${bestHold.label}」，导入后对比单笔均值。${pdtNote}`,
+        experiment: shadow
+          ? {
+              hypothesis: DAY4_SHADOW_HYPOTHESIS,
+              constraint: { kind: 'shadow-hold', days: DAY4_SHADOW_DAYS },
+              targetN: 20,
+            }
+          : undefined,
+        next: shadow
+          ? '继续记录第 4 个交易日收盘退出的影子结果，不要改真实退出，也不要直接改成日内平仓。'
+          : undefined,
       }),
     )
   }

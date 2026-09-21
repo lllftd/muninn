@@ -323,4 +323,17 @@ describe('diagnose', () => {
     expect(items.some((d) => d.id === 'space-ev')).toBe(false)
     expect(items.some((d) => d.id === 'execution-capture')).toBe(false)
   })
+
+  it('hold ≥5 day finding uses shadow-hold day 4 close, not intraday', () => {
+    const book = loadSampleBook()
+    const hold = diagnose(book).find((d) => d.id === 'time-hold-h3')
+    expect(hold).toBeTruthy()
+    expect(hold!.experiment).toBeTruthy()
+    expect(hold!.experiment!.constraint.kind).toBe('shadow-hold')
+    if (hold!.experiment!.constraint.kind === 'shadow-hold') {
+      expect(hold!.experiment!.constraint.days).toBe(4)
+    }
+    expect(hold!.experiment!.hypothesis).not.toMatch(/日内/)
+    expect(hold!.experiment!.hypothesis).toMatch(/第 4 个交易日收盘/)
+  })
 })
