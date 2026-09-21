@@ -8,8 +8,8 @@ export const REGIME_ORDER: Regime[] = ['intraday', 'swing', 'position', 'investo
 
 export const REGIME_LABELS: Record<Regime, string> = {
   intraday: '日内',
-  swing: '波段',
-  position: '持仓',
+  swing: '短线',
+  position: '波段',
   investor: '长线',
 }
 

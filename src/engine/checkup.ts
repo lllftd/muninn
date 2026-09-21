@@ -1,5 +1,12 @@
 import { etDateKey, etParts } from '../lib/time.ts'
-import { mean, median, wilsonInterval } from '../lib/stats.ts'
+import {
+  BOOTSTRAP_SEED,
+  clusterBootstrapSamples,
+  ciFromSamples,
+  mean,
+  median,
+  wilsonInterval,
+} from '../lib/stats.ts'
 import { REGIME_LABELS, REGIME_ORDER, holdDiagnostic, regimeMix } from './regime.ts'
 import type { Checkup, Credibility, GroupRow, GroupStatus, RoundTrip, SampleBanner, SessionBucket, TagHint } from '../types.ts'
 
@@ -10,6 +17,35 @@ const SESSION_LABELS: Record<SessionBucket, string> = {
 }
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+const GROUP_CI_ROUNDS = 400
+
+function seedOf(id: string) {
+  let s = BOOTSTRAP_SEED
+  for (let i = 0; i < id.length; i++) s = (Math.imul(s, 33) + id.charCodeAt(i)) | 0
+  return s >>> 0
+}
+
+function expectancyCiOf(id: string, list: RoundTrip[]): GroupRow['expectancyCi'] {
+  if (list.length < 5) return null
+  const map = new Map<string, RoundTrip[]>()
+  for (const t of list) {
+    const k = etDateKey(t.openTime)
+    const arr = map.get(k) || []
+    arr.push(t)
+    map.set(k, arr)
+  }
+  const clusters = [...map.values()]
+  if (clusters.length < 3) return null
+  const samples = clusterBootstrapSamples(
+    clusters,
+    (items) => (items.length ? mean(items.map((x) => x.realizedPnl)) : null),
+    seedOf(id),
+    GROUP_CI_ROUNDS,
+  )
+  const ci = ciFromSamples(samples, 0.1, 0.9)
+  if (!ci || ci.hi - ci.lo < 1e-6) return null
+  return { lo: ci.lo, hi: ci.hi, method: 'bootstrap' }
+}
 
 function statusOf(n: number): GroupStatus {
   if (n <= 0) return 'empty'
@@ -27,7 +63,30 @@ function factOf(row: { n: number; pnl: number; winRate: number | null; label: st
   return `${row.n} 笔，可以进入规则验证，仍不能外推样本外`
 }
 
-function group(id: string, label: string, list: RoundTrip[], total?: number): GroupRow {
+export function weekdayEt(openTime: Date): number {
+  const p = etParts(openTime)
+  const dt = new Date(Date.UTC(p.year, p.month - 1, p.day))
+  let wd = dt.getUTCDay()
+  if (wd === 0) wd = 1
+  else if (wd === 6) wd = 5
+  return wd
+}
+
+export function holdBucketOf(minutes: number): 'h1' | 'h2' | 'h3' {
+  if (minutes < 24 * 60) return 'h1'
+  if (minutes < 5 * 24 * 60) return 'h2'
+  return 'h3'
+}
+
+export const HOLD_BUCKET_LABELS: Record<'h1' | 'h2' | 'h3', string> = {
+  h1: '持仓 <1 日',
+  h2: '持仓 1–5 日',
+  h3: '持仓 ≥5 日',
+}
+
+export const WEEKDAY_LABELS = WEEKDAYS
+
+export function group(id: string, label: string, list: RoundTrip[], total?: number): GroupRow {
   const wins = list.filter((t) => t.realizedPnl > 0)
   const losses = list.filter((t) => t.realizedPnl < 0)
   const gp = wins.reduce((s, t) => s + t.realizedPnl, 0)
@@ -43,6 +102,7 @@ function group(id: string, label: string, list: RoundTrip[], total?: number): Gr
       winCi: null,
       medianAtrR: null,
       expectancy: null,
+      expectancyCi: null,
       expectancyExMax: null,
       pf: null,
       pnl: 0,
@@ -69,6 +129,7 @@ function group(id: string, label: string, list: RoundTrip[], total?: number): Gr
     winCi: wilson ? { lo: wilson.lo, hi: wilson.hi, method: 'wilson' } : null,
     medianAtrR: median(rs),
     expectancy: n >= 5 ? expectancy : null,
+    expectancyCi: n >= 5 ? expectancyCiOf(id, list) : null,
     expectancyExMax: n >= 5 ? expectancyExMax : null,
     pf: n >= 5 ? (gl > 1e-9 ? gp / gl : gp > 0 ? Number.POSITIVE_INFINITY : 0) : null,
     pnl: row.pnl,
@@ -107,7 +168,7 @@ export function buildCheckup(trips: RoundTrip[]): Checkup {
   const tiltSizeMultiple = tiltSizes.length && normalSizes.length && normalSize ? tiltSize / normalSize : null
   const tiltAmount = tiltTrades.reduce((s, t) => s + t.realizedPnl, 0)
 
-  // 入场时机(时段)只对日内+波段有意义:持仓/长线的分钟级入场点几乎不影响结果。
+  // 入场时机(时段)只对日内+短线有意义:波段/长线的分钟级入场点几乎不影响结果。
   // 所以 session 面板只统计这批 cohort,样本量也按 cohort 算,不被长线那批稀释。
   const sessionCohort = closed.filter((t) => t.regime === 'intraday' || t.regime === 'swing')
   const sessions = (['open30', 'midday', 'close'] as SessionBucket[]).map((bucket) =>
@@ -123,15 +184,7 @@ export function buildCheckup(trips: RoundTrip[]): Checkup {
     group('short', '空头', closed.filter((t) => t.side === 'short'), closed.length),
   ]
   const weekdaysEt = [1, 2, 3, 4, 5].map((d) => {
-    const list = closed.filter((t) => {
-      const p = etParts(t.openTime)
-      const dt = new Date(Date.UTC(p.year, p.month - 1, p.day))
-      let wd = dt.getUTCDay()
-      // 美东周日夜盘在交易日历上属于周一；周六凌晨同理归周五。
-      if (wd === 0) wd = 1
-      else if (wd === 6) wd = 5
-      return wd === d
-    })
+    const list = closed.filter((t) => weekdayEt(t.openTime) === d)
     return group(`wd${d}`, WEEKDAYS[d], list, closed.length)
   })
   const holdBuckets = [
@@ -208,7 +261,7 @@ export function buildCredibility(args: {
   const pfCross =
     args.pf == null ||
     (!!args.pfCi && args.pfCi.lo < 1 && (args.pfCi.unboundedHi || args.pfCi.hi == null || args.pfCi.hi > 1))
-  const reasons: string[] = [`${n} 笔复盘单元`, `${openDays} 个开仓日`]
+  const reasons: string[] = [`${n} 笔`, `${openDays} 个开仓日`]
   if (expCross) reasons.push('单笔期望区间跨 0')
   if (pfCross) reasons.push('PF 区间跨 1')
   if (args.sensitive) reasons.push('对少数交易或复盘口径较敏感')

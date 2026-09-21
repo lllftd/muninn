@@ -7,6 +7,25 @@ export function mean(xs: number[]): number {
   return xs.reduce((s, x) => s + x, 0) / xs.length
 }
 
+/** Pearson r。n&lt;5 或任一侧无变异时为 null。 */
+export function pearson(xs: number[], ys: number[]): number | null {
+  if (xs.length !== ys.length || xs.length < 5) return null
+  const mx = mean(xs)
+  const my = mean(ys)
+  let num = 0
+  let dx = 0
+  let dy = 0
+  for (let i = 0; i < xs.length; i++) {
+    const a = xs[i] - mx
+    const b = ys[i] - my
+    num += a * b
+    dx += a * a
+    dy += b * b
+  }
+  if (dx < 1e-18 || dy < 1e-18) return null
+  return num / Math.sqrt(dx * dy)
+}
+
 export function median(xs: number[]): number | null {
   if (!xs.length) return null
   const a = [...xs].sort((x, y) => x - y)
@@ -233,6 +252,58 @@ export function clusterBootstrap<T>(
     unboundedHi: !Number.isFinite(hiRaw) || inf / rounds > 0.01,
     infShare: inf / rounds,
   }
+}
+
+/** 返回每次重采样的统计量，供自定义分位（如 80% CI）和单侧 p 值。 */
+export function clusterBootstrapSamples<T>(
+  clusters: T[][],
+  stat: (items: T[]) => number | null,
+  seed = BOOTSTRAP_SEED,
+  rounds = BOOTSTRAP_ROUNDS,
+): number[] {
+  if (!clusters.length) return []
+  const rng = mulberry32(seed)
+  const values: number[] = []
+  for (let r = 0; r < rounds; r++) {
+    const sample: T[] = []
+    for (let i = 0; i < clusters.length; i++) {
+      const pick = clusters[Math.floor(rng() * clusters.length)]
+      sample.push(...pick)
+    }
+    const v = stat(sample)
+    if (v == null || Number.isNaN(v) || !Number.isFinite(v)) continue
+    values.push(v)
+  }
+  return values
+}
+
+export function ciFromSamples(values: number[], loQ = 0.1, hiQ = 0.9): { lo: number; hi: number } | null {
+  if (values.length < 20) return null
+  const lo = quantile(values, loQ)
+  const hi = quantile(values, hiQ)
+  if (lo == null || hi == null) return null
+  return { lo, hi }
+}
+
+/** 单侧 P(stat ≤ 0)，加 1 平滑。 */
+export function oneSidedP(values: number[]): number | null {
+  if (!values.length) return null
+  const n = values.filter((v) => v <= 0).length
+  return (1 + n) / (1 + values.length)
+}
+
+/** Benjamini–Hochberg FDR。返回每个 p 值是否在 q 水平下显著。 */
+export function bhFdr(pValues: number[], q = 0.1): boolean[] {
+  const n = pValues.length
+  const pass = Array(n).fill(false)
+  if (!n) return pass
+  const order = pValues.map((p, i) => ({ p, i })).sort((a, b) => a.p - b.p)
+  let maxK = -1
+  for (let k = 0; k < n; k++) {
+    if (order[k].p <= ((k + 1) / n) * q) maxK = k
+  }
+  for (let k = 0; k <= maxK; k++) pass[order[k].i] = true
+  return pass
 }
 
 function yearFrac(a: Date, b: Date): number {

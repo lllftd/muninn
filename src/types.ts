@@ -348,6 +348,8 @@ export type GroupRow = {
   winCi: Interval | null
   medianAtrR: number | null
   expectancy: number | null
+  /** 单笔期望 80% cluster bootstrap 区间。n<5 或簇太少时为 null。 */
+  expectancyCi: Interval | null
   /** 去掉盈亏绝对值最大的一笔后再平均。n<2 为 null。 */
   expectancyExMax: number | null
   pf: number | null
@@ -501,6 +503,151 @@ export type Analytics = {
   regimeCum: RegimeCum
 }
 
+export type SpaceCi = { lo: number; hi: number; method: 'bootstrap'; level: 0.8 }
+
+export type ExitEffGroup = { id: string; label: string; n: number; mean: number | null }
+
+export type GivebackReport = {
+  nFloated: number
+  nClosed: number
+  nPath: number
+  meanRate: number | null
+  sumDollar: number | null
+  sumCi: SpaceCi | null
+  meanRateCi: SpaceCi | null
+  note: string
+}
+
+export type StopLevel = {
+  pct: number
+  preset: boolean
+  pnl: number
+  delta: number
+  deltaCi: SpaceCi | null
+  pValue: number | null
+  fdr: boolean
+  nStopped: number
+}
+
+export type StopScan = {
+  actualPnl: number
+  levels: StopLevel[]
+  presets: StopLevel[]
+  bestPreset: StopLevel | null
+  note: string
+}
+
+export type EvLever = {
+  id: 'winRate' | 'avgWin' | 'lossRate' | 'avgLoss'
+  label: string
+  shock: string
+  delta: number
+  deltaCi: SpaceCi | null
+}
+
+export type ReplayFamily = 'trail' | 'hold' | 'open30'
+
+export type ReplayRule = {
+  id: string
+  family: ReplayFamily
+  label: string
+  pnl: number
+  delta: number
+  deltaCi: SpaceCi | null
+  nTriggered: number
+  nEligible: number
+  pValue: number | null
+  fdr: boolean
+  computable: boolean
+}
+
+export type RuleReplay = {
+  actualPnl: number
+  rules: ReplayRule[]
+  bestPreset: ReplayRule | null
+  note: string
+}
+
+export type OppBench = {
+  id: 'symbol-bh' | 'spy'
+  label: string
+  n: number
+  actual: number
+  bench: number
+  delta: number
+  deltaCi: SpaceCi | null
+}
+
+export type OppMatrixRow = {
+  symbol: string
+  nLong: number
+  nShort: number
+  longMean: number | null
+  shortMean: number | null
+  reverseShortMean: number | null
+}
+
+export type OppCost = {
+  symbolBh: OppBench | null
+  spy: OppBench | null
+  matrix: OppMatrixRow[]
+  note: string
+}
+
+export type PsmStratum = {
+  id: string
+  symbol: string
+  bucket: string
+  bucketLabel: string
+  nShort: number
+  nLong: number
+  shortMean: number
+  longMean: number
+}
+
+export type PsmReport = {
+  nTreated: number
+  nMatched: number
+  unmatchedShare: number | null
+  method: 'exact'
+  status: 'ok' | 'cannot-control'
+  treatedMean: number | null
+  controlMean: number | null
+  delta: number | null
+  deltaCi: SpaceCi | null
+  pValue: number | null
+  strata: PsmStratum[]
+  note: string
+}
+
+export type KellyReport = {
+  n: number
+  nWin: number
+  nLoss: number
+  p: number | null
+  b: number | null
+  full: number | null
+  half: number | null
+  quarter: number | null
+  quarterCi: SpaceCi | null
+  corrSizePnl: number | null
+  medianNotional: number | null
+  medianNotionalWin: number | null
+  medianNotionalLoss: number | null
+  note: string
+}
+
+export type SpaceReport = {
+  exitEfficiency: { overall: number | null; n: number; groups: ExitEffGroup[] }
+  giveback: GivebackReport
+  stopScan: StopScan | null
+  evLevers: EvLever[]
+  ruleReplay: RuleReplay
+  oppCost: OppCost
+  psm: PsmReport
+  kelly: KellyReport | null
+}
+
 export type Book = {
   accountName: string
   isSample: boolean
@@ -516,6 +663,7 @@ export type Book = {
   credibility: Credibility
   sensitivity: Sensitivity
   analytics: Analytics
+  space: SpaceReport
   bars: Record<string, Bar[]>
   cashflows: Cashflow[]
 }

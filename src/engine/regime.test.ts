@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   REGIME_BANDS,
+  REGIME_LABELS,
   annualizedTripReturn,
   classifyRegime,
   enrichRegime,
@@ -24,6 +25,15 @@ function trip(over: Partial<RoundTrip>): RoundTrip {
     ...over,
   } as RoundTrip
 }
+
+describe('REGIME_LABELS', () => {
+  it('does not reuse 持仓 for the position band', () => {
+    expect(REGIME_LABELS.intraday).toBe('日内')
+    expect(REGIME_LABELS.swing).toBe('短线')
+    expect(REGIME_LABELS.position).toBe('波段')
+    expect(REGIME_LABELS.investor).toBe('长线')
+  })
+})
 
 describe('classifyRegime', () => {
   it('same-day is intraday regardless of minutes', () => {

@@ -8,6 +8,7 @@ import { enrichRegime } from './regime.ts'
 import { monteCarlo, regimeCumulative, runsTest } from './analytics.ts'
 import { etDateKey } from '../lib/time.ts'
 import { buildSensitivity } from './sensitivity.ts'
+import { buildSpace } from './space.ts'
 import { METRIC_VERSION } from '../types.ts'
 import type { Bar, Book, Cashflow, QuotePack, Warning } from '../types.ts'
 
@@ -178,6 +179,7 @@ export function assembleBook(args: {
     credibility,
     sensitivity,
     analytics,
+    space: buildSpace(review, args.quotes.bars),
     bars: args.quotes.bars,
     cashflows,
   }

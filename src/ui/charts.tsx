@@ -1,5 +1,5 @@
 import { Fragment, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { moneyK } from '../lib/format.ts'
+import { money, moneyK } from '../lib/format.ts'
 import { etDateKey } from '../lib/time.ts'
 
 export function LineChart(props: {
@@ -57,6 +57,15 @@ function niceTicks(min: number, max: number, count = 4, pin?: number): number[] 
   return uniq.filter((t) => t === pin || Math.abs(t - pin) >= minGap)
 }
 
+function steppedTicks(min: number, max: number, step: number, pin?: number): number[] {
+  if (!(step > 0)) return niceTicks(min, max, 4, pin)
+  const ticks: number[] = []
+  const start = Math.ceil(min / step) * step
+  for (let v = start; v <= max + step * 1e-9; v += step) ticks.push(Number(v.toFixed(8)))
+  if (pin != null && min <= pin && max >= pin && !ticks.some((t) => Math.abs(t - pin) < step * 1e-6)) ticks.push(pin)
+  return ticks.sort((a, b) => a - b)
+}
+
 function dateTickLabels(dates: string[], n: number): Array<{ i: number; label: string }> {
   if (!n || !dates.length) return []
   const step = Math.max(1, Math.floor(n / 6))
@@ -77,6 +86,15 @@ function dateTickLabels(dates: string[], n: number): Array<{ i: number; label: s
   return out
 }
 
+export type PathMarker = {
+  i: number
+  value: number
+  text?: string
+  kicker?: string
+  amount?: string
+  tone?: 'up' | 'down' | 'now'
+}
+
 export function MultiLine(props: {
   height: number
   series: Array<{ values: number[]; color: string; fill?: string; width?: number; dash?: string }>
@@ -88,13 +106,28 @@ export function MultiLine(props: {
   onRange?: (range: { lo: number; hi: number } | null) => void
   onPick?: (i: number) => void
   tickFormat?: (v: number) => string
+  tickStep?: number
   dates?: string[]
+  hideDates?: boolean
+  tight?: boolean
+  axisReadout?: boolean
+  markerDots?: boolean
   endLabel?: { value: number; text: string }
-  markers?: Array<{ i: number; value: number; text: string; tone?: 'up' | 'down' }>
+  markers?: PathMarker[]
   /** 盈亏这类跨零数据用符号感填充:零线以上一色、以下一色,比单色描边可读得多。 */
   signedFill?: { up: string; down: string }
+  /** 从 baseline 向下的面积填充（回撤图）。 */
+  areaFill?: boolean
   /** 分位带(如蒙特卡洛扇形):在 lo~hi 之间填一层实色半透明区域,画在线之下。 */
   bands?: Array<{ lo: number[]; hi: number[]; fill: string }>
+  /** 区间阴影，如最大回撤从峰到谷。 */
+  shadeRange?: { lo: number; hi: number; fill: string }
+  /** 水位线与曲线之间的回撤伤口，仅窗口内。 */
+  wound?: { lo: number; hi: number }
+  /** 曲线上的胜负点，r 为像素半径。 */
+  dots?: Array<{ i: number; value: number; up: boolean; r: number; label?: string }>
+  /** 竖向参考线，如「参数越紧越好 = 过拟合」。 */
+  vRef?: { i: number; label: string }
 }) {
   const uid = useId().replace(/:/g, '')
   const w = 640
@@ -108,7 +141,7 @@ export function MultiLine(props: {
   const yMin = dataMin - padAmt
   const yMax = dataMax + padAmt
   const span = yMax - yMin || 1
-  const pad = { l: 2, r: 96, t: 16, b: 18 }
+  const pad = { l: 2, r: props.tight ? 10 : 96, t: 18, b: props.vRef ? 28 : props.tight ? 8 : 18 }
   const innerW = w - pad.l - pad.r
   const innerH = h - pad.t - pad.b
   const xAt = (i: number) => pad.l + (i / Math.max(n - 1, 1)) * innerW
@@ -117,8 +150,24 @@ export function MultiLine(props: {
   const xPct = (i: number) => `${(xAt(i) / w) * 100}%`
   const fmtTick = props.tickFormat ?? ((t: number) => (t / 100).toFixed(2))
   const origin = useRef<number | null>(null)
-  const ticks = niceTicks(yMin + padAmt * 0.15, yMax - padAmt * 0.15, 4, baseline)
-  const dates = props.dates && props.dates.length === n ? dateTickLabels(props.dates, n) : []
+  const ticks = props.tickStep
+    ? steppedTicks(yMin + padAmt * 0.08, yMax - padAmt * 0.08, props.tickStep, baseline)
+    : niceTicks(yMin + padAmt * 0.15, yMax - padAmt * 0.15, 4, baseline)
+  const dates = !props.hideDates && props.dates && props.dates.length === n ? dateTickLabels(props.dates, n) : []
+  const axisReadout = props.axisReadout !== false
+  const markerDots = props.markerDots !== false
+  const values0 = props.series[0]?.values ?? []
+  const woundD = (() => {
+    const wn = props.wound
+    if (!wn || !values0.length || wn.hi <= wn.lo) return null
+    const lo = Math.max(0, Math.min(wn.lo, values0.length - 1))
+    const hi = Math.max(lo, Math.min(wn.hi, values0.length - 1))
+    const peak = values0[lo]
+    let d = `M${xAt(lo).toFixed(1)},${yPx(peak).toFixed(1)}`
+    for (let i = lo; i <= hi; i++) d += ` L${xAt(i).toFixed(1)},${yPx(Math.min(values0[i], peak)).toFixed(1)}`
+    d += ` L${xAt(hi).toFixed(1)},${yPx(peak).toFixed(1)} Z`
+    return d
+  })()
   const pathFor = (values: number[]) => {
     const xs = values.map((_, i) => xAt(i))
     return xs.map((x, i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${yPx(values[i]).toFixed(1)}`).join(' ')
@@ -135,19 +184,34 @@ export function MultiLine(props: {
     for (let i = m - 1; i >= 0; i--) d += `L${xAt(i).toFixed(1)},${yPx(lo[i]).toFixed(1)} `
     return `${d}Z`
   }
-  const labels: Array<{ key: string; text: string; left: string; top: number; className: string }> = []
+  const labels: Array<{
+    key: string
+    kicker?: string
+    amount?: string
+    text?: string
+    left: string
+    top: number
+    className: string
+    i: number
+    value: number
+    below: boolean
+  }> = []
   const lastI = Math.max(n - 1, 0)
   for (const m of props.markers || []) {
-    if (m.i === lastI) continue
-    const nearRight = n > 1 && m.i / (n - 1) > 0.72
-    // 峰在上、谷在下:标签放在数据点远离曲线的一侧,不再压在线上。
+    if (m.i === lastI && props.endLabel) continue
+    const nearRight = n > 1 && m.i / Math.max(n - 1, 1) > 0.72
     const below = m.tone === 'down'
     labels.push({
-      key: `m-${m.i}`,
+      key: `m-${m.i}-${m.kicker || m.text || ''}`,
+      kicker: m.kicker,
+      amount: m.amount,
       text: m.text,
-      left: nearRight ? `calc(${xPct(m.i)} - 8px)` : xPct(m.i),
-      top: yPx(m.value),
+      left: nearRight ? `calc(${xPct(m.i)} - 6px)` : xPct(m.i),
+      top: yPx(m.value) + (below ? 18 : -18),
       className: `ml-mark ${m.tone || ''} ${nearRight ? 'near-right' : ''} ${below ? 'below' : ''}`,
+      i: m.i,
+      value: m.value,
+      below,
     })
   }
   if (props.endLabel && n) {
@@ -157,17 +221,19 @@ export function MultiLine(props: {
       left: `calc(${xPct(lastI)} + 10px)`,
       top: yPx(props.endLabel.value),
       className: 'ml-end',
+      i: lastI,
+      value: props.endLabel.value,
+      below: false,
     })
   }
   labels.sort((a, b) => a.top - b.top)
   for (let i = 1; i < labels.length; i++) {
-    if (labels[i].top - labels[i - 1].top < 16) labels[i].top = labels[i - 1].top + 16
+    if (labels[i].top - labels[i - 1].top < 14) labels[i].top = labels[i - 1].top + 14
   }
-  // 光标处主序列的 y 值,用来画水平准星线 + 读数。
   const cursorVal = props.cursor != null ? props.series[0]?.values[props.cursor] ?? null : null
   const cursorY = cursorVal != null && Number.isFinite(cursorVal) ? yPx(cursorVal) : null
   return (
-    <div className="ml-chart">
+    <div className={`ml-chart${props.tight ? ' tight' : ''}`}>
       <div className="ml-body">
         <div className="ml-y" aria-hidden>
           {ticks.map((t) => (
@@ -207,6 +273,14 @@ export function MultiLine(props: {
             props.onPick(i)
           }}
         >
+          {props.areaFill ? (
+            <defs>
+              <linearGradient id={`${uid}-area`} x1="0" y1={yPx(baseline)} x2="0" y2={yPx(dataMin)} gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stopColor="var(--down)" stopOpacity="0.05" />
+                <stop offset="100%" stopColor="var(--down)" stopOpacity="0.34" />
+              </linearGradient>
+            </defs>
+          ) : null}
           {ticks.map((t) => (
             <line
               key={t}
@@ -226,17 +300,30 @@ export function MultiLine(props: {
               fill="var(--gold-fill)"
             />
           ) : null}
+          {woundD ? <path d={woundD} className="ml-wound" style={{ fill: 'var(--wound-fill)' }} /> : null}
+          {props.shadeRange && !woundD && props.shadeRange.hi > props.shadeRange.lo ? (
+            <rect
+              x={xAt(props.shadeRange.lo)}
+              y={pad.t}
+              width={Math.max(1, xAt(props.shadeRange.hi) - xAt(props.shadeRange.lo))}
+              height={innerH}
+              fill={props.shadeRange.fill}
+              opacity={0.55}
+            />
+          ) : null}
           {(props.bands || []).map((b, bi) => (
             <path key={`band-${bi}`} d={bandPath(b.lo, b.hi)} fill={b.fill} />
           ))}
           {props.series.map((s, i) => {
             const d = pathFor(s.values)
             const baseY = yPx(baseline)
-            const signed = props.signedFill && i === 0
+            const signed = props.signedFill && i === 0 && !props.areaFill
             const lw = s.width ?? 1.8
             return (
               <g key={i}>
-                {signed ? (
+                {props.areaFill && i === 0 ? (
+                  <path d={areaFor(s.values, baseline)} fill={`url(#${uid}-area)`} />
+                ) : signed ? (
                   <>
                     <clipPath id={`${uid}-up`}>
                       <rect x={pad.l} y={pad.t} width={innerW} height={Math.max(0, baseY - pad.t)} />
@@ -250,7 +337,7 @@ export function MultiLine(props: {
                 ) : s.fill ? (
                   <path d={areaFor(s.values, baseline)} fill={s.fill} />
                 ) : null}
-                {lw >= 2 && !s.dash ? (
+                {lw >= 2 && !s.dash && !props.tight ? (
                   <path
                     d={d}
                     fill="none"
@@ -278,23 +365,74 @@ export function MultiLine(props: {
           {(props.marks || []).map((i) => (
             <line key={i} x1={xAt(i)} x2={xAt(i)} y1={pad.t} y2={pad.t + innerH} className="cf-mark" />
           ))}
+          {props.vRef ? (
+            <line
+              x1={xAt(props.vRef.i)}
+              x2={xAt(props.vRef.i)}
+              y1={pad.t}
+              y2={pad.t + innerH}
+              className="vref-line"
+              vectorEffect="nonScalingStroke"
+            />
+          ) : null}
+          {(props.dots || []).map((d, di) => (
+            <circle
+              key={`dot-${d.i}-${di}`}
+              cx={xAt(d.i)}
+              cy={yPx(d.value)}
+              r={d.r}
+              fill={d.up ? 'var(--up)' : 'var(--down)'}
+              opacity={0.85}
+            >
+              {d.label ? <title>{d.label}</title> : null}
+            </circle>
+          ))}
+          {labels
+            .filter((lab) => lab.className.includes('ml-mark'))
+            .map((lab) => (
+              <line
+                key={`ld-${lab.key}`}
+                x1={xAt(lab.i)}
+                x2={xAt(lab.i)}
+                y1={yPx(lab.value)}
+                y2={lab.top}
+                className="ml-leader"
+                vectorEffect="nonScalingStroke"
+              />
+            ))}
           {props.cursor != null && n ? (
-            <line x1={xAt(props.cursor)} x2={xAt(props.cursor)} y1={pad.t} y2={pad.t + innerH} className="cursor-line" />
+            <line
+              x1={xAt(props.cursor)}
+              x2={xAt(props.cursor)}
+              y1={pad.t}
+              y2={pad.t + innerH}
+              className="cursor-line"
+              vectorEffect="nonScalingStroke"
+            />
           ) : null}
           {cursorY != null && props.cursor != null ? (
-            <line x1={pad.l} x2={w - pad.r} y1={cursorY} y2={cursorY} className="cursor-line" />
+            <line
+              x1={pad.l}
+              x2={w - pad.r}
+              y1={cursorY}
+              y2={cursorY}
+              className="cursor-line"
+              vectorEffect="nonScalingStroke"
+            />
           ) : null}
         </svg>
-        {(props.markers || []).map((m) =>
-          m.i === lastI ? null : (
-            <span
-              key={`dot-${m.i}`}
-              className={`ml-dot ${m.tone || 'up'}`}
-              style={{ left: xPct(m.i), top: `${(yPx(m.value) / h) * 100}%` }}
-            />
-          ),
-        )}
-        {cursorY != null && props.cursor != null ? (
+        {markerDots
+          ? (props.markers || []).map((m) =>
+              m.i === lastI && props.endLabel ? null : (
+                <span
+                  key={`dot-${m.i}-${m.kicker || ''}`}
+                  className={`ml-dot ${m.tone || 'up'}`}
+                  style={{ left: xPct(m.i), top: `${(yPx(m.value) / h) * 100}%` }}
+                />
+              ),
+            )
+          : null}
+        {axisReadout && cursorY != null && props.cursor != null ? (
           <>
             <span className="ml-cursor-dot" style={{ left: xPct(props.cursor), top: `${(cursorY / h) * 100}%` }} />
             <span className="ml-cursor-y" style={{ top: `${(cursorY / h) * 100}%` }}>
@@ -304,9 +442,20 @@ export function MultiLine(props: {
         ) : null}
         {labels.map((lab) => (
           <span key={lab.key} className={lab.className} style={{ left: lab.left, top: `${(lab.top / h) * 100}%` }}>
-            {lab.text}
+            {lab.kicker ? <em>{lab.kicker}</em> : null}
+            {lab.amount || lab.text ? (
+              <>
+                {lab.kicker ? ' ' : null}
+                <b>{lab.amount || lab.text}</b>
+              </>
+            ) : null}
           </span>
         ))}
+        {props.vRef ? (
+          <span className="vref-lbl" style={{ left: xPct(props.vRef.i) }}>
+            {props.vRef.label}
+          </span>
+        ) : null}
       </div>
       {dates.length ? (
         <div className="ml-x" aria-hidden>
@@ -614,6 +763,133 @@ export function SignedBars(props: {
   )
 }
 
+export type ForestItem = {
+  id: string
+  label: string
+  value: number | null
+  lo?: number | null
+  hi?: number | null
+  unboundedHi?: boolean
+  n?: number
+  dim?: boolean
+  lead?: boolean
+  note?: string
+}
+
+function forestTone(item: ForestItem, ref: number): 'up' | 'down' | 'unsure' {
+  if (item.value == null || !Number.isFinite(item.value)) return 'unsure'
+  const lo = item.lo != null && Number.isFinite(item.lo) ? item.lo : null
+  const hi = item.unboundedHi ? Number.POSITIVE_INFINITY : item.hi != null && Number.isFinite(item.hi) ? item.hi : null
+  if (lo == null || hi == null) {
+    if (item.value > ref) return 'up'
+    if (item.value < ref) return 'down'
+    return 'unsure'
+  }
+  if (lo > ref) return 'up'
+  if (hi < ref) return 'down'
+  return 'unsure'
+}
+
+export function ForestPlot(props: {
+  items: ForestItem[]
+  refMark?: number
+  format?: (v: number) => string
+  onPick?: (id: string) => void
+}) {
+  const ref = props.refMark ?? 0
+  const fmt = props.format ?? ((v: number) => String(v))
+  const nums: number[] = [ref]
+  for (const item of props.items) {
+    if (item.value != null && Number.isFinite(item.value)) nums.push(item.value)
+    if (item.lo != null && Number.isFinite(item.lo)) nums.push(item.lo)
+    if (!item.unboundedHi && item.hi != null && Number.isFinite(item.hi)) nums.push(item.hi)
+  }
+  if (nums.length < 2 && nums[0] === ref) {
+    const any = props.items.some((x) => x.n != null)
+    if (!any && props.items.every((x) => x.value == null)) return <p className="tiny">没有可画的数据。</p>
+  }
+  let min = Math.min(...nums)
+  let max = Math.max(...nums)
+  if (max - min < 1e-9) {
+    min -= 1
+    max += 1
+  }
+  const pad = (max - min) * 0.18
+  min -= pad
+  max += pad
+  const span = max - min
+  const xPct = (v: number) => `${((v - min) / span) * 100}%`
+  const ticks = niceTicks(min, max, 4, ref)
+
+  return (
+    <div className="forest">
+      <div className="forest-axis" aria-hidden>
+        {ticks.map((t) => (
+          <span key={t} className={`forest-tick${t === ref ? ' ref' : ''}`} style={{ left: xPct(t) }}>
+            {fmt(t)}
+          </span>
+        ))}
+      </div>
+      {props.items.map((item) => {
+        const tone = forestTone(item, ref)
+        const hasVal = item.value != null && Number.isFinite(item.value)
+        const rawLo = item.lo != null && Number.isFinite(item.lo) ? item.lo : null
+        const rawHi = item.unboundedHi ? max : item.hi != null && Number.isFinite(item.hi) ? item.hi : null
+        const hasWhisker = rawLo != null && rawHi != null && rawHi - rawLo > 1e-9
+        const clipLo = hasWhisker && rawLo! < min + span * 0.008
+        const clipHi = hasWhisker && !item.unboundedHi && rawHi! > max - span * 0.008
+        const lo = hasWhisker ? Math.max(rawLo!, min) : null
+        const hi = hasWhisker ? Math.min(rawHi!, max) : null
+        const mid = hasWhisker ? (lo! + hi!) / 2 : 0
+        const cross = hasWhisker && tone === 'unsure'
+        const note = item.note
+        const body = (
+          <>
+            <span className="forest-label">{item.label}</span>
+            <div className="forest-track">
+              <i className="forest-ref" style={{ left: xPct(ref) }} />
+              {hasWhisker && lo != null && hi != null ? (
+                <i
+                  className={`forest-whisker${item.unboundedHi ? ' open-hi' : ''}${clipLo ? ' clip-lo' : ''}${clipHi ? ' clip-hi' : ''}`}
+                  title={rawLo != null && rawHi != null ? `${fmt(rawLo)} 至 ${fmt(rawHi)}` : undefined}
+                  style={{
+                    left: xPct(mid),
+                    width: `max(8px, calc(${xPct(hi)} - ${xPct(lo)}))`,
+                  }}
+                />
+              ) : null}
+              {hasVal ? <i className="forest-dot" style={{ left: xPct(item.value!)} } /> : null}
+            </div>
+            <span className="forest-amt">
+              {hasVal ? fmt(item.value!) : item.n === 0 ? '无样本' : item.n != null && item.n < 5 ? `${item.n}笔·不画须` : '—'}
+              {item.n != null && hasVal ? <i className="bar-n">n={item.n}</i> : null}
+              {cross ? (
+                <i className="forest-badge" title="须穿过 0，还锁不住正负">
+                  ⊗
+                </i>
+              ) : null}
+              {note ? <em className="forest-note">{note}</em> : null}
+            </span>
+          </>
+        )
+        const cls = `forest-row ${tone}${item.dim ? ' dim' : ''}${item.lead || item.id === 'all' ? ' lead' : ''}`
+        if (props.onPick) {
+          return (
+            <button type="button" key={item.id} className={`${cls} as-btn`} onClick={() => props.onPick?.(item.id)}>
+              {body}
+            </button>
+          )
+        }
+        return (
+          <div key={item.id} className={cls}>
+            {body}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function MonthBars(props: {
   items: Array<{ label: string; value: number }>
   format?: (v: number) => string
@@ -783,12 +1059,89 @@ export function Histogram(props: {
 }
 
 /** 蜂群:重叠的点按固定间距上下错开,避免随机抖动看起来疏密不一。 */
+function niceCeil(v: number): number {
+  const a = Math.abs(v)
+  if (!(a > 0)) return 1
+  const mag = 10 ** Math.floor(Math.log10(a))
+  const n = a / mag
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : n <= 8 ? 8 : 10) * mag
+}
+
+/** 对称盈亏轴：用数据峰值向上取整到 1–2–2.5–5–8–10。 */
+export function signedBound(values: number[]): number {
+  const peak = Math.max(...values.filter((v) => Number.isFinite(v)).map((v) => Math.abs(v)), 1)
+  return niceCeil(peak)
+}
+
+function hexOffsets(maxRings: number, dist: number): Array<{ dx: number; dy: number }> {
+  const out: Array<{ dx: number; dy: number }> = []
+  for (let q = -maxRings; q <= maxRings; q++) {
+    for (let r = -maxRings; r <= maxRings; r++) {
+      if (Math.abs(q + r) > maxRings) continue
+      out.push({ dx: dist * (q + r / 2), dy: dist * r * 0.86602540378 })
+    }
+  }
+  out.sort((a, b) => a.dx * a.dx + a.dy * a.dy - (b.dx * b.dx + b.dy * b.dy))
+  return out
+}
+
+function beeswarmPack(
+  values: number[],
+  xPct: (v: number) => number,
+  widthPx: number,
+  radiusPx: number,
+  maxRings: number,
+): { dx: Array<number | null>; ys: Array<number | null>; leftover: number[] } {
+  const n = values.length
+  const dxs: Array<number | null> = Array.from({ length: n }, () => 0)
+  const ys: Array<number | null> = Array.from({ length: n }, () => 0)
+  const leftover: number[] = []
+  if (widthPx <= 0 || n === 0) return { dx: dxs, ys, leftover }
+  const minDist = radiusPx * 2 + 2
+  const minDist2 = minDist * minDist
+  const xs = values.map((v) => (xPct(v) / 100) * widthPx)
+  const slots = hexOffsets(maxRings, minDist)
+  const placed: Array<{ x: number; y: number }> = []
+  for (let i = 0; i < n; i++) {
+    const x0 = xs[i]
+    let chosen: { dx: number; dy: number } | null = null
+    for (const slot of slots) {
+      const x = x0 + slot.dx
+      const y = slot.dy
+      let ok = true
+      for (let j = 0; j < placed.length; j++) {
+        const ddx = placed[j].x - x
+        const ddy = placed[j].y - y
+        if (ddx * ddx + ddy * ddy < minDist2) {
+          ok = false
+          break
+        }
+      }
+      if (ok) {
+        chosen = slot
+        break
+      }
+    }
+    if (!chosen) {
+      dxs[i] = null
+      ys[i] = null
+      leftover.push(i)
+    } else {
+      dxs[i] = chosen.dx
+      ys[i] = chosen.dy
+      placed.push({ x: x0 + chosen.dx, y: chosen.dy })
+    }
+  }
+  return { dx: dxs, ys, leftover }
+}
+
 function beeswarmOffsets(
   values: number[],
   xPct: (v: number) => number,
   widthPx: number,
   radiusPx: number,
   maxAbsY: number,
+  side: 'both' | 'up' = 'both',
 ): number[] {
   const n = values.length
   const ys = Array.from({ length: n }, () => 0)
@@ -798,11 +1151,13 @@ function beeswarmOffsets(
   const xs = values.map((v) => (xPct(v) / 100) * widthPx)
   const placed: Array<{ x: number; y: number }> = []
   const maxK = Math.max(1, Math.floor(maxAbsY / minDist))
+  const oneSided = side === 'up'
   for (let i = 0; i < n; i++) {
     const x = xs[i]
     const candidates = [0]
     for (let k = 1; k <= maxK; k++) {
-      candidates.push(k * minDist, -k * minDist)
+      if (oneSided) candidates.push(k * minDist)
+      else candidates.push(k * minDist, -k * minDist)
     }
     let chosen = 0
     for (const cy of candidates) {
@@ -917,6 +1272,7 @@ export function BulletRow(props: {
   domain: [number, number]
   bands: Array<{ to: number; tone: 'bad' | 'mid' | 'good' }>
   refMark?: number
+  ticks?: Array<{ at: number; text: string }>
   naText?: string
   hint?: string
 }) {
@@ -928,25 +1284,36 @@ export function BulletRow(props: {
       <span className="bullet-label" title={props.hint}>
         {props.label}
       </span>
-      <div className="bullet-track">
-        {props.value == null
-          ? null
-          : props.bands.map((b, i) => {
-              const from = i === 0 ? lo : props.bands[i - 1].to
-              const left = Math.max(lo, from)
-              const right = Math.min(hi, b.to)
-              return (
-                <span
-                  key={i}
-                  className={`bullet-band ${b.tone}`}
-                  style={{ left: pos(left), width: `${((right - left) / span) * 100}%` }}
-                />
-              )
-            })}
-        {props.value != null && props.refMark != null ? (
-          <span className="bullet-ref" style={{ left: pos(props.refMark) }} />
+      <div className="bullet-plot">
+        <div className="bullet-track">
+          {props.value == null
+            ? null
+            : props.bands.map((b, i) => {
+                const from = i === 0 ? lo : props.bands[i - 1].to
+                const left = Math.max(lo, from)
+                const right = Math.min(hi, b.to)
+                return (
+                  <span
+                    key={i}
+                    className={`bullet-band ${b.tone}`}
+                    style={{ left: pos(left), width: `${((right - left) / span) * 100}%` }}
+                  />
+                )
+              })}
+          {props.value != null && props.refMark != null ? (
+            <span className="bullet-ref" style={{ left: pos(props.refMark) }} />
+          ) : null}
+          {props.value != null ? <span className="bullet-mark" style={{ left: pos(props.value) }} /> : null}
+        </div>
+        {props.ticks?.length ? (
+          <div className="bullet-ticks">
+            {props.ticks.map((t) => (
+              <span key={t.at} style={{ left: pos(t.at) }}>
+                {t.text}
+              </span>
+            ))}
+          </div>
         ) : null}
-        {props.value != null ? <span className="bullet-mark" style={{ left: pos(props.value) }} /> : null}
       </div>
       <span className="bullet-val">{props.value == null ? (props.naText ?? '—') : (props.valueText ?? String(props.value))}</span>
     </div>
@@ -1241,6 +1608,406 @@ export function CoverageMeter(props: { label: string; value: number; of?: number
         {shown}
         {props.note ? <i> {props.note}</i> : null}
       </span>
+    </div>
+  )
+}
+
+export function PnlSwarm(props: {
+  points: Array<{ id: string; v: number; label?: string }>
+  format?: (v: number) => string
+  bound?: number
+  onPick?: (id: string) => void
+}) {
+  const plotRef = useRef<HTMLDivElement>(null)
+  const [plotW, setPlotW] = useState(0)
+  const [expanded, setExpanded] = useState(false)
+  const rows = props.points.filter((p) => Number.isFinite(p.v))
+  useLayoutEffect(() => {
+    const el = plotRef.current
+    if (!el) return
+    const apply = () => setPlotW(el.clientWidth)
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [rows.length])
+  if (!rows.length) return null
+  const fmt = props.format ?? money
+  const sorted = [...rows].sort((a, b) => a.v - b.v || a.id.localeCompare(b.id))
+  const bound = props.bound ?? signedBound(sorted.map((p) => p.v))
+  const padAmt = bound * 0.06
+  const lo = -bound - padAmt
+  const hi = bound + padAmt
+  const span = hi - lo || 1
+  const at = (v: number) => ((v - lo) / span) * 100
+  const r = 4.5
+  const pitch = r * 2 + 2
+  const maxRings = expanded ? 7 : 4
+  const packed = beeswarmPack(
+    sorted.map((p) => p.v),
+    at,
+    plotW,
+    r,
+    maxRings,
+  )
+  const placedYs = packed.ys.filter((y): y is number => y != null)
+  const placedDx = packed.dx.filter((x): x is number => x != null)
+  const placedH = Math.max(0, ...placedYs.map((y) => Math.abs(y)), ...placedDx.map((x) => Math.abs(x)))
+  const leftover = packed.leftover
+  const clusterOffset = leftover.length ? placedH + pitch + 6 : placedH
+  const clusters = (() => {
+    if (!leftover.length) return [] as Array<{ key: string; n: number; x: number; y: number; up: boolean; ids: string[] }>
+    const bins = new Map<string, number[]>()
+    const binW = 16
+    for (const i of leftover) {
+      const x = (at(sorted[i].v) / 100) * Math.max(plotW, 1)
+      const up = sorted[i].v >= 0
+      const key = `${up ? 'u' : 'd'}:${Math.round(x / binW)}`
+      const arr = bins.get(key) || []
+      arr.push(i)
+      bins.set(key, arr)
+    }
+    return [...bins.entries()].map(([key, idxs]) => {
+      const up = key.startsWith('u')
+      const xs = idxs.map((i) => at(sorted[i].v))
+      const x = xs.reduce((a, b) => a + b, 0) / xs.length
+      return {
+        key,
+        n: idxs.length,
+        x,
+        y: up ? -clusterOffset : clusterOffset,
+        up,
+        ids: idxs.map((i) => sorted[i].id),
+      }
+    })
+  })()
+  const cloudH = Math.max(placedH, ...clusters.map((c) => Math.abs(c.y)))
+  const stageH = Math.max(72, cloudH * 2 + 24)
+  const ticks = [-bound, 0, bound]
+  const isolateCut = span * 0.1
+  const labels: Array<{ id: string; text: string; left: string; y: number; pct: number }> = []
+  const tryLabel = (i: number, kind: 'win' | 'loss') => {
+    const p = sorted[i]
+    const nb = kind === 'win' ? sorted[i - 1] : sorted[i + 1]
+    if (!p || !nb || packed.ys[i] == null) return
+    if (Math.abs(p.v - nb.v) < isolateCut) return
+    labels.push({
+      id: p.id,
+      text: kind === 'win' ? `独赢 ${fmt(p.v)}` : `独亏 ${fmt(p.v)}`,
+      left: `calc(${at(p.v)}% + ${packed.dx[i] ?? 0}px)`,
+      y: packed.ys[i]!,
+      pct: at(p.v),
+    })
+  }
+  tryLabel(0, 'loss')
+  tryLabel(sorted.length - 1, 'win')
+
+  return (
+    <div className="swarm">
+      <div className="swarm-stage" ref={plotRef} style={{ height: stageH }}>
+        <i className="swarm-zero" style={{ left: `${at(0)}%` }} />
+        <i className="swarm-base" />
+        {sorted.map((p, i) => {
+          const y = packed.ys[i]
+          const dx = packed.dx[i]
+          if (y == null || dx == null) return null
+          const cls = `swarm-dot ${p.v >= 0 ? 'up' : 'down'}`
+          const style = { left: `calc(${at(p.v)}% + ${dx}px)`, top: `calc(50% + ${y}px)` }
+          const title = p.label || fmt(p.v)
+          if (props.onPick) {
+            return (
+              <button
+                key={p.id}
+                type="button"
+                className={cls}
+                style={style}
+                title={title}
+                onClick={() => props.onPick?.(p.id)}
+              />
+            )
+          }
+          return <span key={p.id} className={cls} style={style} title={title} />
+        })}
+        {clusters.map((c) => (
+          <button
+            key={c.key}
+            type="button"
+            className={`swarm-cluster ${c.up ? 'up' : 'down'}`}
+            style={{ left: `${c.x}%`, top: `calc(50% + ${c.y}px)` }}
+            title={`还有 ${c.n} 笔挤在这里，点击展开`}
+            onClick={() => setExpanded(true)}
+          >
+            ×{c.n}
+          </button>
+        ))}
+        {expanded ? (
+          <button type="button" className="swarm-fold" onClick={() => setExpanded(false)}>
+            收起
+          </button>
+        ) : null}
+        {labels.map((lab) => (
+          <span
+            key={`l-${lab.id}`}
+            className={`swarm-lbl${lab.pct > 78 ? ' end' : lab.pct < 12 ? ' start' : ''}`}
+            style={{ left: lab.left, top: `calc(50% + ${lab.y}px)` }}
+          >
+            {lab.text}
+          </span>
+        ))}
+      </div>
+      <div className="swarm-axis" aria-hidden>
+        {ticks.map((t) => (
+          <span key={t} style={{ left: `${at(t)}%` }}>
+            {fmt(t)}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function TimePnlBars(props: {
+  points: Array<{ id: string; t: number; v: number; label?: string }>
+  height?: number
+  format?: (v: number) => string
+  bound?: number
+  onPick?: (id: string) => void
+}) {
+  if (!props.points.length) return null
+  const rows = [...props.points].sort((a, b) => a.t - b.t || a.id.localeCompare(b.id))
+  const w = 640
+  const h = props.height ?? 72
+  const pad = { l: 48, r: 12, t: 6, b: 16 }
+  const innerW = w - pad.l - pad.r
+  const innerH = h - pad.t - pad.b
+  const tMin = rows[0].t
+  const tMax = rows[rows.length - 1].t
+  const spanT = Math.max(tMax - tMin, 86400000)
+  const maxAbs = props.bound ?? signedBound(rows.map((p) => p.v))
+  const yPx = (v: number) => pad.t + (1 - (v + maxAbs) / (2 * maxAbs)) * innerH
+  const zero = yPx(0)
+  const xAt = (t: number) => pad.l + ((t - tMin) / spanT) * innerW
+  const bw = Math.max(2, Math.min(8, (innerW / Math.max(rows.length, 1)) * 0.55))
+  const fmt = props.format ?? money
+  const ticks = [-maxAbs, 0, maxAbs]
+  const L = (x: number) => `${(x / w) * 100}%`
+  const T = (y: number) => `${(y / h) * 100}%`
+  return (
+    <div className="svg-wrap spark">
+      <svg viewBox={`0 0 ${w} ${h}`} className="chart vbars spark" preserveAspectRatio="none">
+        {ticks.map((t) => (
+          <line
+            key={t}
+            x1={pad.l}
+            x2={w - pad.r}
+            y1={yPx(t)}
+            y2={yPx(t)}
+            className={Math.abs(t) < 1e-9 ? 'base-line' : 'grid'}
+          />
+        ))}
+        {rows.map((p) => {
+          const x = xAt(p.t) - bw / 2
+          const clipped = Math.max(-maxAbs, Math.min(maxAbs, p.v))
+          const overflow = Math.abs(p.v) > maxAbs + 1e-6
+          const y = Math.min(yPx(clipped), zero)
+          const bh = Math.max(2, Math.abs(yPx(clipped) - zero))
+          return (
+            <g key={p.id}>
+              <rect
+                x={x - 2}
+                y={pad.t}
+                width={bw + 4}
+                height={innerH}
+                fill="transparent"
+                className="seq-hit"
+                onClick={() => props.onPick?.(p.id)}
+              >
+                <title>{p.label || fmt(p.v)}</title>
+              </rect>
+              <rect
+                className="cbar"
+                x={x}
+                y={y}
+                width={bw}
+                height={bh}
+                rx={1}
+                fill={p.v >= 0 ? 'var(--up)' : 'var(--down)'}
+                pointerEvents="none"
+              />
+              {overflow ? (
+                <polygon
+                  points={
+                    clipped >= 0
+                      ? `${x + bw / 2},${pad.t} ${x},${pad.t + 5} ${x + bw},${pad.t + 5}`
+                      : `${x + bw / 2},${pad.t + innerH} ${x},${pad.t + innerH - 5} ${x + bw},${pad.t + innerH - 5}`
+                  }
+                  fill={p.v >= 0 ? 'var(--up)' : 'var(--down)'}
+                  pointerEvents="none"
+                />
+              ) : null}
+            </g>
+          )
+        })}
+      </svg>
+      <div className="svg-lbls" aria-hidden>
+        {ticks.map((t) => (
+          <span key={`y-${t}`} style={{ left: L(pad.l - 6), top: T(yPx(t)), transform: 'translate(-100%,-50%)' }}>
+            {fmt(t)}
+          </span>
+        ))}
+        <span style={{ left: L(pad.l), top: T(h - 8), transform: 'translateY(-50%)' }}>
+          {etDateKey(new Date(tMin)).slice(5)}
+        </span>
+        <span style={{ left: L(w - pad.r), top: T(h - 8), transform: 'translate(-100%,-50%)' }}>
+          {etDateKey(new Date(tMax)).slice(5)}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+export function Waterfall(props: {
+  steps: Array<{ id: string; label: string; delta: number; total?: boolean; note?: string }>
+  format?: (v: number) => string
+  height?: number
+}) {
+  if (!props.steps.length) return null
+  const fmt = props.format ?? money
+  const w = 640
+  const h = props.height ?? 188
+  const pad = { l: 44, r: 16, t: 22, b: 28 }
+  const innerW = w - pad.l - pad.r
+  const innerH = h - pad.t - pad.b
+  let run = 0
+  const rows = props.steps.map((s) => {
+    if (s.total) return { ...s, from: 0, to: s.delta }
+    const from = run
+    run += s.delta
+    return { ...s, from, to: run }
+  })
+  const vals = rows.flatMap((r) => [r.from, r.to])
+  const yMin = Math.min(0, ...vals)
+  const yMax = Math.max(0, ...vals)
+  const padAmt = Math.max((yMax - yMin) * 0.12, 1)
+  const lo = yMin - padAmt
+  const hi = yMax + padAmt
+  const span = hi - lo || 1
+  const yPx = (v: number) => pad.t + (1 - (v - lo) / span) * innerH
+  const zero = yPx(0)
+  const gap = innerW / rows.length
+  const bw = Math.max(10, gap * 0.55)
+  const ticks = niceTicks(lo + padAmt * 0.2, hi - padAmt * 0.2, 3, 0)
+  const L = (x: number) => `${(x / w) * 100}%`
+  const T = (y: number) => `${(y / h) * 100}%`
+  return (
+    <div className="svg-wrap wf">
+      <svg viewBox={`0 0 ${w} ${h}`} className="chart vbars wf" preserveAspectRatio="none">
+        {ticks.map((t) => (
+          <line
+            key={t}
+            x1={pad.l}
+            x2={w - pad.r}
+            y1={yPx(t)}
+            y2={yPx(t)}
+            className={Math.abs(t) < 1e-9 ? 'base-line' : 'grid'}
+          />
+        ))}
+        {rows.map((r, i) => {
+          const x = pad.l + i * gap + (gap - bw) / 2
+          const y1 = yPx(r.from)
+          const y2 = yPx(r.to)
+          const y = Math.min(y1, y2)
+          const bh = Math.max(2, Math.abs(y2 - y1))
+          const last = Boolean(r.total) || i === rows.length - 1
+          const bar = (
+            <rect
+              x={x}
+              y={y}
+              width={bw}
+              height={bh}
+              rx={2}
+              fill={last ? 'var(--gold)' : r.delta >= 0 ? 'var(--up)' : 'var(--down)'}
+            >
+              <title>{`${r.label} ${fmt(r.total ? r.to : r.delta)}`}</title>
+            </rect>
+          )
+          if (i > 0 && !r.total) {
+            const prevX = pad.l + (i - 1) * gap + (gap - bw) / 2 + bw
+            const connectorY = yPx(r.from)
+            return (
+              <g key={r.id}>
+                <line x1={prevX} x2={x} y1={connectorY} y2={connectorY} className="grid" />
+                {bar}
+              </g>
+            )
+          }
+          return <g key={r.id}>{bar}</g>
+        })}
+        <line x1={pad.l} x2={w - pad.r} y1={zero} y2={zero} className="base-line" />
+      </svg>
+      {rows.map((r, i) => {
+        const x = pad.l + i * gap + gap / 2
+        const y1 = yPx(r.from)
+        const y2 = yPx(r.to)
+        const tall = Math.abs(y2 - y1) > 28
+        const y = tall ? (y1 + y2) / 2 : y2 + (r.to >= r.from ? -16 : 16)
+        const last = Boolean(r.total) || i === rows.length - 1
+        const tone = last ? 'gold' : r.delta >= 0 ? 'up' : 'down'
+        return (
+          <span
+            key={`a-${r.id}`}
+            className={`wf-amt ${tone}${tall ? ' in' : ''}`}
+            style={{ left: L(x), top: T(y) }}
+          >
+            {fmt(r.total ? r.to : r.delta)}
+          </span>
+        )
+      })}
+      {rows.map((r, i) => (
+        <span key={`c-${r.id}`} className="wf-label" style={{ left: L(pad.l + i * gap + gap / 2) }}>
+          {r.label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+export function MixStack(props: { win: number; loss: number; long?: number; short?: number }) {
+  const [mode, setMode] = useState<'result' | 'side'>('result')
+  const sideOk = props.long != null && props.short != null && props.long + props.short > 0
+  const a = mode === 'side' && sideOk ? props.long! : props.win
+  const b = mode === 'side' && sideOk ? props.short! : props.loss
+  const n = a + b
+  if (n <= 0) return null
+  const aPct = (a / n) * 100
+  const bPct = 100 - aPct
+  const aName = mode === 'side' ? '多' : '胜'
+  const bName = mode === 'side' ? '空' : '负'
+  const label = (name: string, count: number, pct: number) => {
+    if (pct >= 22) return `${name} ${count} · ${Math.round(pct)}%`
+    if (pct >= 10) return `${name} ${count}`
+    return ''
+  }
+  return (
+    <div className="mix-row">
+      <div className="mix-stack" title={`${aName} ${a} · ${bName} ${b}（${Math.round(aPct)}% / ${Math.round(bPct)}%）`}>
+        <span className="mix-win" style={{ width: `${aPct}%` }}>
+          {label(aName, a, aPct)}
+        </span>
+        <span className="mix-loss" style={{ width: `${bPct}%` }}>
+          {label(bName, b, bPct)}
+        </span>
+      </div>
+      {sideOk ? (
+        <div className="mix-toggles print-hide">
+          <button type="button" className={mode === 'result' ? 'on' : ''} onClick={() => setMode('result')}>
+            胜负
+          </button>
+          <button type="button" className={mode === 'side' ? 'on' : ''} onClick={() => setMode('side')}>
+            多空
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }

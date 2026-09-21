@@ -66,7 +66,7 @@ export function InsightDrawer(props: {
               <dd>{p.twr == null ? '无法计算' : '有数值'}</dd>
             </div>
           </dl>
-          <button type="button" className="link" onClick={() => props.onGo?.('riskbench')}>
+          <button type="button" className="link" onClick={() => props.onGo?.('what')}>
             跳转到资金曲线
           </button>
         </>
@@ -107,8 +107,8 @@ export function InsightDrawer(props: {
             {p.benchKind === 'spy-total-return' ? '基准为 SPY 复权全收益。' : '基准为 SPX 价格指数，不含股息。'}
             账户级指标，交易筛选不会改写它。
           </p>
-          <button type="button" className="link" onClick={() => props.onGo?.('riskbench')}>
-            查看三条财富曲线
+          <button type="button" className="link" onClick={() => props.onGo?.('what')}>
+            查看资金路径
           </button>
         </>
       ) : null}
@@ -140,7 +140,7 @@ export function InsightDrawer(props: {
             </div>
           </dl>
           <p className="tiny">回撤比例来自 TWR 财富曲线。出入金已被剥离，不会单独制造回撤跳变。</p>
-          <button type="button" className="link" onClick={() => props.onGo?.('riskbench')}>
+          <button type="button" className="link" onClick={() => props.onGo?.('what')}>
             定位到回撤图
           </button>
         </>
@@ -411,21 +411,18 @@ function coverageFix(item: string): string {
 }
 
 function tabWatchTitle(tab: Tab): string {
-  if (tab === 'ledger') return '核算'
-  if (tab === 'riskbench') return '风险与基准'
-  return '这一层'
+  if (tab === 'why') return '为什么'
+  if (tab === 'how') return '怎么办'
+  return '是什么'
 }
 
 function tabWatchBody(book: Book, tab: Tab): string {
-  if (tab === 'ledger') {
+  if (tab === 'why') {
     const miss = book.performance.coverage.filter((c) => c.status === 'not_provided').map((c) => c.item)
-    return miss.length ? `${miss.join('、')}未提供。` : '覆盖项已导入或已标记。'
-  }
-  if (tab === 'riskbench') {
     if (book.performance.rf.warning) return book.performance.rf.warning
     if (!book.performance.hasNav) return '未提供期初净资产，回撤比例与账户收益不可计算。'
-    return book.performance.alpha?.valid ? '行情与无风险利率已对齐。' : 'Alpha 未通过一致性校验或账户收益不可计算。'
+    return miss.length ? `${miss.join('、')}未提供。` : `n=${book.performance.closedCount}，小样本保护仍然有效。`
   }
-  if (tab === 'trades') return `n=${book.performance.closedCount}，小样本保护仍然有效。`
-  return book.credibility.bannerText
+  if (tab === 'how') return '把发现换算成金额和动作。实验只验证假设，不下达禁令。'
+  return '封面判定：这段数据说什么、可信吗、总体怎么样。'
 }

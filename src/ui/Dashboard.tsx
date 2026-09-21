@@ -1,13 +1,26 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Brand, ThemeToggle } from './chrome.tsx'
-import { BoxStrip, BulletRow, CalendarHeatmap, CaptureBar, ColorScatter, CoverageMeter, Histogram, MaeBar, MonthBars, MultiLine, PnlSequence, Scatter, SignedBars, Stat } from './charts.tsx'
+import { BoxStrip, CalendarHeatmap, CaptureBar, ColorScatter, CoverageMeter, ForestPlot, Histogram, MaeBar, MonthBars, MultiLine, Scatter, SignedBars, type PathMarker } from './charts.tsx'
 import { InsightDrawer, type Insight } from './InsightDrawer.tsx'
 import { PathDrawer } from './PathDrawer.tsx'
-import { TABS, tabFromView, viewOf, type Tab } from './views.ts'
+import { AnalysisPage, tripsCsv } from './AnalysisPage.tsx'
+import { HowPage } from './HowPage.tsx'
+import { WhatPage } from './WhatPage.tsx'
+import { WhyLuck } from './ReviewHome.tsx'
+import { HealthBadge, HealthDrawer } from './HealthDrawer.tsx'
+import { ANALYSIS_HASH_FROM_VIEW, TABS, tabForAnchor, tabFromView, viewOf, type Tab } from './views.ts'
+import { buildCover, formatBe } from '../engine/cover.ts'
 import { ciText, clsPnl, coverageLabel, finiteNum, holdLabel, money, moneyAbs, moneyK, pct, pctPlain, signed } from '../lib/format.ts'
 import { etDateKey, etParts } from '../lib/time.ts'
 import { getTagVerdict } from '../lib/tagVerdicts.ts'
 import { REGIME_BOUND_TEXT, REGIME_LABELS } from '../engine/regime.ts'
+import { diagnose, type Diagnosis } from '../engine/diagnose.ts'
+import { buildHealth } from '../engine/health.ts'
+import { buildCross } from '../engine/cross.ts'
+import { buildSpace } from '../engine/space.ts'
+import { withEvaluations } from '../engine/experiments.ts'
+import { loadExperiments, upsertExperiment } from '../lib/experiments.ts'
+import { loadProPrefs, saveProPrefs, type ProPrefs } from '../lib/proPrefs.ts'
 import type { Bar, Book, Checkup, CoverageRow, EquityPoint, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
 
 type SortKey = 'time' | 'pnl' | 'r' | 'hold'
@@ -246,22 +259,29 @@ function RegimeMixBar({ checkup }: { checkup: Checkup }) {
   )
 }
 
-function GroupViz(props: { title: string; rows: GroupRow[]; onPick: (row: GroupRow) => void }) {
+function GroupViz(props: { title: string; rows: GroupRow[]; onPick: (row: GroupRow) => void; id?: string }) {
   const items = props.rows.map((r) => ({
     id: r.id,
     label: r.label,
     value: r.n >= 5 ? r.expectancy : null,
+    lo: r.expectancyCi?.lo,
+    hi: r.expectancyCi?.hi,
+    unboundedHi: r.expectancyCi?.unboundedHi,
     n: r.n,
     dim: r.n < 10,
   }))
   return (
-    <article className="panel">
+    <article className="panel" id={props.id}>
       <h3>{props.title}</h3>
-      <p className="muted">n&lt;5 不排名；5–9 灰显探索性；≥10 弱结论。点一条打开该组。去掉最大一笔后的均值在明细表。</p>
-      <SignedBars items={items} format={money} onPick={(id) => {
-        const row = props.rows.find((r) => r.id === id)
-        if (row && row.n > 0) props.onPick(row)
-      }} />
+      <p className="muted">点是单笔期望，须是 80% 区间。穿过 0 = 锁不住正负。n&lt;5 不画；5–9 灰显。点一条打开该组。</p>
+      <ForestPlot
+        items={items}
+        format={money}
+        onPick={(id) => {
+          const row = props.rows.find((r) => r.id === id)
+          if (row && row.n > 0) props.onPick(row)
+        }}
+      />
       <details className="fold-block">
         <summary>明细表</summary>
         <GroupTable rows={props.rows} onPick={props.onPick} />
@@ -356,12 +376,6 @@ function tripsForGroup(id: string, trips: RoundTrip[]): RoundTrip[] {
   return []
 }
 
-function dayRet(eq: EquityPoint[], i: number): number | null {
-  if (i <= 0) return null
-  const prev = eq[i - 1].index
-  return prev ? eq[i].index / prev - 1 : null
-}
-
 type TradeBenchRow = {
   trip: RoundTrip
   stockRet: number
@@ -400,113 +414,120 @@ function tradeBenchComparison(episodes: RoundTrip[], benchBars: Bar[]) {
   }
 }
 
-function BenchUnavailablePanel(props: { missing: string[]; onSupplement: () => void }) {
-  const rows = [
-    { item: '分析起点净资产', status: props.missing.includes('capital') ? '未提供' : '已提供' },
-    { item: '外部入出金记录', status: props.missing.includes('cashflow') ? '完整性未确认' : '已确认' },
-    { item: '账户资产覆盖范围', status: props.missing.includes('subset') ? '需要确认' : '仅美股正股' },
-  ]
-  return (
-    <div className="banner cannot-prove bench-banner">
-      <strong>暂时无法进行账户级基准比较</strong>
-      <p className="tiny">
-        要回答「有没有跑赢 SPY」，需要账户净资产和完整入出金。当前缺期初净资产与完整现金流，只有正股子账本的盯市盈亏可看，不与 SPY 对拍。
-      </p>
-      <table className="grid bench-missing">
-        <thead>
-          <tr>
-            <th>所需数据</th>
-            <th>状态</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.item}>
-              <td>{r.item}</td>
-              <td>{r.status}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p className="tiny">补充后可以计算：账户 TWR、XIRR、组合与 SPY 财富曲线、超额收益、Alpha 与 Beta。</p>
-      <button type="button" className="btn-primary sm" onClick={props.onSupplement}>
-        补充账户数据，启用基准比较
-      </button>
-    </div>
-  )
-}
-
 type ChartRange = { lo: number; hi: number } | null
 
 function BookPathChart(props: {
   mode: 'account' | 'sleeve'
   equity: EquityPoint[]
-  hover: EquityPoint | null
   cursor: number | null
   range: ChartRange
   marks: number[]
-  markers?: Array<{ i: number; value: number; text: string; tone?: 'up' | 'down' }>
+  markers?: PathMarker[]
   onCursor: (i: number | null) => void
   onRange: (range: { lo: number; hi: number } | null) => void
 }) {
-  const last = props.equity.at(-1)
-  if (props.mode === 'sleeve') {
-    return (
-      <div className="chart-wrap tall">
-        <MultiLine
-          height={260}
-          baseline={0}
-          tickFormat={moneyK}
-          dates={props.equity.map((e) => e.date)}
-          endLabel={last ? { value: last.equity, text: `当前 ${money(last.equity)}` } : undefined}
-          markers={props.markers}
-          cursor={props.cursor}
-          range={props.range}
-          marks={props.marks}
-          onCursor={props.onCursor}
-          onRange={props.onRange}
-          signedFill={{ up: 'var(--up-fill)', down: 'var(--down-fill)' }}
-          series={[{ values: props.equity.map((e) => e.equity), color: 'var(--gold)', width: 2 }]}
-        />
-        {props.hover ? (
-          <div className="chart-tip">
-            <b>{props.hover.date}</b>
-            <span>盯市盈亏 {money(props.hover.equity)}</span>
-            <span>现金 {money(props.hover.cash)}</span>
-            <span>未实现 {money(props.hover.mtm)}</span>
-            <span>回撤 {pct(props.hover.drawdown)}</span>
-          </div>
-        ) : null}
-      </div>
-    )
-  }
+  const sleeve = props.mode === 'sleeve'
   return (
-    <div className="chart-wrap tall">
+    <div className="chart-wrap tall cover-path">
       <MultiLine
-        height={260}
-        baseline={100}
+        height={208}
+        baseline={sleeve ? 0 : 100}
+        tickFormat={sleeve ? moneyK : undefined}
         dates={props.equity.map((e) => e.date)}
-        endLabel={last ? { value: last.index, text: `当前 ${(last.index / 100).toFixed(3)}` } : undefined}
+        hideDates
+        tight
+        axisReadout={false}
+        markerDots={false}
+        markers={props.markers}
         cursor={props.cursor}
         range={props.range}
         marks={props.marks}
         onCursor={props.onCursor}
         onRange={props.onRange}
-        series={[{ values: props.equity.map((e) => e.index), color: 'var(--gold)', fill: 'var(--gold-fill)', width: 2 }]}
+        series={[
+          {
+            values: props.equity.map((e) => (sleeve ? e.equity : e.index)),
+            color: 'var(--path-line)',
+            width: 1.6,
+          },
+        ]}
       />
-      {props.hover ? (
-        <div className="chart-tip">
-          <b>{props.hover.date}</b>
-          <span>账户财富 {(props.hover.index / 100).toFixed(3)}</span>
-          <span>
-            当日收益 {dayRet(props.equity, props.cursor ?? 0) == null ? '—' : pct(dayRet(props.equity, props.cursor ?? 0)!)}
-          </span>
-          <span>净现金流 {props.hover.cashflow ? money(props.hover.cashflow) : '$0'}</span>
-          <span>回撤 {pct(props.hover.drawdown)}</span>
-        </div>
-      ) : null}
     </div>
   )
+}
+
+function CoverDrawdown(props: {
+  accountOk: boolean
+  sleeveOk: boolean
+  fail: boolean
+  book: Book
+  p: Book['performance']
+  cursor: number | null
+  range: ChartRange
+  ddSeries: number[] | null
+  naReason: string
+  onCursor: (i: number | null) => void
+  onRange: (range: { lo: number; hi: number } | null) => void
+  onPickDay: (i: number) => void
+}) {
+  const { accountOk, sleeveOk, fail, book, p, cursor, range, ddSeries } = props
+  if (fail) return <p className="tiny">路径异常，回撤图禁用。</p>
+  if (accountOk && book.equity.length) {
+    return (
+      <div className="chart-wrap cover-dd" id="dd">
+        <MultiLine
+          height={132}
+          baseline={0}
+          tight
+          axisReadout={false}
+          markerDots={false}
+          tickFormat={(v) => pct(v)}
+          tickStep={0.05}
+          dates={book.equity.map((e) => e.date)}
+          cursor={cursor}
+          range={range}
+          areaFill
+          onCursor={props.onCursor}
+          onRange={props.onRange}
+          onPick={props.onPickDay}
+          series={[{ values: book.equity.map((e) => e.drawdown), color: 'var(--down)', width: 1.3 }]}
+        />
+        <p className="tiny path-foot">
+          最大回撤 {p.maxDrawdown == null ? 'N/A' : pct(p.maxDrawdown)}
+          {p.ddTrough ? ` · 谷底 ${p.ddTrough}` : ''}
+          {p.ddRecover ? ` · 恢复 ${p.ddRecover}` : p.currentlyUnderwater ? ' · 尚未恢复' : ''}
+        </p>
+      </div>
+    )
+  }
+  if (sleeveOk && ddSeries) {
+    return (
+      <div className="chart-wrap cover-dd" id="dd">
+        <MultiLine
+          height={132}
+          baseline={0}
+          tight
+          axisReadout={false}
+          markerDots={false}
+          tickFormat={moneyK}
+          tickStep={25000}
+          dates={book.equity.map((e) => e.date)}
+          cursor={cursor}
+          range={range}
+          areaFill
+          onCursor={props.onCursor}
+          onRange={props.onRange}
+          onPick={props.onPickDay}
+          series={[{ values: ddSeries, color: 'var(--down)', width: 1.3 }]}
+        />
+        <p className="tiny path-foot">
+          最大回落 {p.maxDrawdownUsd ? `−${moneyAbs(p.maxDrawdownUsd)}` : 'N/A'}
+          {p.ddTrough ? ` · 谷底 ${p.ddTrough}` : ''}
+        </p>
+      </div>
+    )
+  }
+  return <p className="tiny">{props.naReason}</p>
 }
 
 function TradeBenchPanel(props: {
@@ -545,31 +566,34 @@ function TradeBenchPanel(props: {
           </div>
           {excesses.length >= 3 ? <Histogram values={excesses} bins={17} format={pct} /> : null}
           {sorted.length ? (
-            <table className="grid trips">
-              <thead>
-                <tr>
-                  <th>代码</th>
-                  <th>方向</th>
-                  <th>股票持有期</th>
-                  <th>SPY 同期</th>
-                  <th>超额</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.slice(0, 15).map((r) => (
-                  <tr key={r.trip.id} onClick={() => props.onOpenTrip(r.trip)} role="button" tabIndex={0}>
-                    <td>
-                      <b>{r.trip.symbol}</b>
-                      <div className="muted">{r.trip.name}</div>
-                    </td>
-                    <td>{r.trip.side === 'long' ? '多' : '空'}</td>
-                    <td className={clsPnl(r.stockRet)}>{pct(r.stockRet)}</td>
-                    <td>{r.spxRet == null ? 'SPY 同期不可用' : <span className={clsPnl(r.spxRet)}>{pct(r.spxRet)}</span>}</td>
-                    <td>{r.excess == null ? '—' : <span className={clsPnl(r.excess)}>{pct(r.excess)}</span>}</td>
+            <details className="fold-block">
+              <summary>逐笔对照表 · {sorted.length} 行</summary>
+              <table className="grid trips">
+                <thead>
+                  <tr>
+                    <th>代码</th>
+                    <th>方向</th>
+                    <th>股票持有期</th>
+                    <th>SPY 同期</th>
+                    <th>超额</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {sorted.map((r) => (
+                    <tr key={r.trip.id} onClick={() => props.onOpenTrip(r.trip)} role="button" tabIndex={0}>
+                      <td>
+                        <b>{r.trip.symbol}</b>
+                        <div className="muted">{r.trip.name}</div>
+                      </td>
+                      <td>{r.trip.side === 'long' ? '多' : '空'}</td>
+                      <td className={clsPnl(r.stockRet)}>{pct(r.stockRet)}</td>
+                      <td>{r.spxRet == null ? 'SPY 同期不可用' : <span className={clsPnl(r.spxRet)}>{pct(r.spxRet)}</span>}</td>
+                      <td>{r.excess == null ? '—' : <span className={clsPnl(r.excess)}>{pct(r.excess)}</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
           ) : (
             <p className="tiny">没有可对拍的闭环交易（缺少基准行情或平仓价格）。</p>
           )}
@@ -741,6 +765,7 @@ function QualityRead(props: {
 
   const pfShown = pf == null ? '—' : !Number.isFinite(pf) ? '无亏损' : pf.toFixed(2)
   const payText = payoff != null && Number.isFinite(payoff) ? payoff.toFixed(1) : null
+  const be = wr != null && payoff != null && payoff > 0 ? formatBe({ wr, need: 1 / (1 + payoff) }) : null
   let pfNote = '把所有赢的钱加总，除以所有亏的钱。大于 1 才整体赚钱。'
   if (pf == null) pfNote = '算不出。'
   else if (!Number.isFinite(pf)) pfNote = '这段没有亏损单，这个倍数没有意义。'
@@ -753,6 +778,10 @@ function QualityRead(props: {
     }
     if (pfSide === 'unsure') pfNote += ` 误差大约 ${ciText(props.profitFactor.ci, 'num', 2)}，过没过 1 还说不准。`
   }
+
+  const beNote = be
+    ? `胜率 ${be.wrText}，盈亏平衡需 ${be.needText}。${be.gapPp >= 0 ? '已经站在线的这边。' : '还没到线。'}和「是什么」同一套取整。`
+    : '算不出盈亏平衡。'
 
   const row = (q: string, v: ReactNode, note: string, onAsk?: () => void) => (
     <div className="quality-row">
@@ -776,7 +805,12 @@ function QualityRead(props: {
         {headline}
       </p>
       <div className="quality-rows">
-        {row('赚钱的笔数够不够？', wr == null ? '—' : pctPlain(wr, 0), wrNote, props.onWinRate)}
+        {row('赚钱的笔数够不够？', wr == null ? '—' : be?.wrText ?? pctPlain(wr, 0), wrNote, props.onWinRate)}
+        {row(
+          '离盈亏平衡还有多远？',
+          be ? be.scan.replace(/^距盈亏平衡/, '') : '—',
+          beNote,
+        )}
         {row(
           '平均每笔赚还是亏？',
           exp == null ? '—' : <span className={clsPnl(exp)}>{money(exp)}</span>,
@@ -786,48 +820,6 @@ function QualityRead(props: {
         {row('赢的总额够不够补亏的？', pfShown, pfNote)}
       </div>
     </>
-  )
-}
-
-function EdgePanel(props: {
-  winRate: MetricPoint
-  payoff: MetricPoint
-  profitFactor: MetricPoint
-  expectancy: MetricPoint
-}) {
-  const wr = props.winRate.value
-  const payoff = props.payoff.value
-  const pf = props.profitFactor.value
-  const exp = props.expectancy.value
-  if (wr == null || payoff == null || !(payoff > 0)) return null
-  const be = 1 / (1 + payoff)
-  const hasEdge = wr >= be
-  const gapPp = (wr - be) * 100
-  const pfText = pf != null && Number.isFinite(pf) ? (pf > 20 ? '> 20（极不稳定）' : pf.toFixed(2)) : '—'
-  const expText = exp != null ? money(exp) : '—'
-  const max = Math.max(0.3, be * 1.6, wr * 1.6)
-  const pctOf = (v: number) => `${(v / max) * 100}%`
-  return (
-    <article className="panel">
-      <h3>交易优势诊断</h3>
-      <p style={{ margin: '0 0 4px', fontWeight: 650, color: hasEdge ? 'var(--up)' : 'var(--down)' }}>
-        {hasEdge ? '胜率高于盈亏平衡线' : '当前尚未达到盈亏平衡'}
-      </p>
-      <p className="tiny" style={{ marginBottom: 10 }}>
-        实际胜率 {pctPlain(wr, 0)}，盈亏平衡胜率 {pctPlain(be, 1)}；差距 {gapPp >= 0 ? '+' : ''}
-        {gapPp.toFixed(1)} pp · PF {pfText} · 历史单笔均值 {expText}。
-      </p>
-      <div className="edge-track">
-        <div className="edge-fill" style={{ width: pctOf(wr) }} />
-        <div className="edge-be" style={{ left: pctOf(be) }} title={`盈亏平衡 ${pctPlain(be, 1)}`} />
-      </div>
-      <div className="tiny" style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span>0%</span>
-        <span>实际 {pctPlain(wr, 0)}</span>
-        <span>盈亏平衡 {pctPlain(be, 1)}</span>
-        <span>{pctPlain(max, 0)}</span>
-      </div>
-    </article>
   )
 }
 
@@ -917,9 +909,17 @@ function currentView(): Tab {
   return tabFromView(new URLSearchParams(window.location.search).get('view'))
 }
 
-function writeView(tab: Tab) {
+function initialHash(): string {
+  const raw = new URLSearchParams(window.location.search).get('view')
+  if (window.location.hash.length > 1) return window.location.hash.slice(1)
+  return (raw && ANALYSIS_HASH_FROM_VIEW[raw]) || ''
+}
+
+function writeView(tab: Tab, hash?: string) {
   const next = new URL(window.location.href)
   next.searchParams.set('view', viewOf(tab))
+  if (hash) next.hash = hash
+  else next.hash = ''
   history.replaceState(null, '', next)
 }
 
@@ -936,6 +936,10 @@ export function Dashboard(props: {
   const [tab, setTab] = useState<Tab>(() => currentView())
   const [sort, setSort] = useState<SortKey>('time')
   const [showAccountDrawer, setShowAccountDrawer] = useState(false)
+  const [showHealth, setShowHealth] = useState(false)
+  const [prefs, setPrefs] = useState<ProPrefs>(() => (typeof window === 'undefined' ? { minN: 15, minGroupN: 10, concentration: 0.4 } : loadProPrefs()))
+  const [expTick, setExpTick] = useState(0)
+  const [focusAnchor, setFocusAnchor] = useState<string | null>(() => initialHash() || null)
   const [selected, setSelected] = useState<RoundTrip | null>(null)
   const [insight, setInsight] = useState<Insight | null>(null)
   const [groupReturn, setGroupReturn] = useState<Insight | null>(null)
@@ -945,21 +949,48 @@ export function Dashboard(props: {
   const [cursor, setCursor] = useState<number | null>(null)
   const [range, setRange] = useState<{ lo: number; hi: number } | null>(null)
   const [showAllTrips, setShowAllTrips] = useState(false)
+  const [focusTrip, setFocusTrip] = useState<string | null>(null)
   const [showAllLenses, setShowAllLenses] = useState(false) // 入场时机面板的逃生口:判错也只花一次点击
 
   useEffect(() => {
-    writeView(tab)
-  }, [tab])
+    writeView(tab, focusAnchor || undefined)
+  }, [tab, focusAnchor])
 
-  const go = (next: Tab) => {
+  const go = (next: Tab, hash?: string) => {
     setTab(next)
-    writeView(next)
+    if (hash) setFocusAnchor(hash)
+    writeView(next, hash)
+  }
+
+  const goEvidence = (anchor: string) => {
+    setShowHealth(false)
+    setInsight(null)
+    go(tabForAnchor(anchor), anchor)
+  }
+
+  const goWhyTrip = (id: string) => {
+    setFocusTrip(id)
+    setShowAllTrips(true)
+    go('why', 'trips')
+  }
+
+  const persistPrefs = (next: ProPrefs) => {
+    setPrefs(next)
+    saveProPrefs(next)
   }
 
   const closedAll = useMemo(
     () => book.episodes.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP')),
     [book.episodes],
   )
+
+  useEffect(() => {
+    if (tab !== 'why' || !focusTrip) return
+    const t = window.setTimeout(() => {
+      document.getElementById(`trip-${focusTrip}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 80)
+    return () => window.clearTimeout(t)
+  }, [tab, focusTrip])
   const symbols = useMemo(() => [...new Set(closedAll.map((t) => t.symbol))].sort(), [closedAll])
   const rangeDates = useMemo(
     () =>
@@ -997,6 +1028,45 @@ export function Dashboard(props: {
   const winRate = scopedMetrics?.winRate ?? p.winRate
   const expectancy = scopedMetrics?.expectancy ?? p.expectancy
   const profitFactor = scopedMetrics?.profitFactor ?? p.profitFactor
+  const health = useMemo(() => buildHealth(book), [book])
+  const diagnoses = useMemo(() => diagnose(book, prefs), [book, prefs])
+  const cross = useMemo(() => buildCross(book.episodes), [book.episodes])
+  const space = useMemo(() => (filtered ? buildSpace(scoped, book.bars) : book.space), [filtered, scoped, book.space, book.bars])
+  const experimentRows = useMemo(() => {
+    const closedEps = book.episodes.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP'))
+    return withEvaluations(loadExperiments(book.accountName), closedEps, prefs)
+  }, [book, prefs, expTick])
+  const claimedIds = useMemo(
+    () => experimentRows.filter((e) => e.status === 'active').map((e) => e.diagnosisId),
+    [experimentRows],
+  )
+  const cover = useMemo(
+    () => buildCover(book, diagnoses, health, experimentRows),
+    [book, diagnoses, health, experimentRows],
+  )
+  const claimDiagnosis = (d: Diagnosis) => {
+    if (!d.canClaim || !d.experiment) return
+    const closedEps = book.episodes.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP'))
+    upsertExperiment({
+      id: `${d.id}-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      diagnosisId: d.id,
+      hypothesis: d.experiment.hypothesis,
+      constraint: d.experiment.constraint,
+      targetN: d.experiment.targetN,
+      baselineN: closedEps.length,
+      baselineExpectancy: p.expectancy.value,
+      claimedTripIds: closedEps.map((t) => t.id),
+      accountKey: book.accountName.trim() || 'default',
+      status: 'active',
+    })
+    setExpTick((n) => n + 1)
+    go('how')
+  }
+  const exportTrips = () => {
+    const rows = book.episodes.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP'))
+    download(`muninn-trips-${book.accountName || 'book'}.csv`, tripsCsv(rows))
+  }
 
   const scatter = closed.filter((t) => t.maePct != null && t.mfePct != null)
   const accountOk = p.pathKind === 'account'
@@ -1004,11 +1074,6 @@ export function Dashboard(props: {
   const naReason = p.accountReturnReason || '缺少账户收益率所需数据'
   const fail = p.pathAudit && !p.pathAudit.ok
   const hover = cursor != null ? book.equity[cursor] : null
-  const troughIdx = useMemo(() => {
-    if (!book.equity.length || p.ddTrough == null) return null
-    const i = book.equity.findIndex((e) => e.date === p.ddTrough)
-    return i >= 0 ? i : null
-  }, [book.equity, p.ddTrough])
   const cfMarks = useMemo(
     () => book.equity.map((e, i) => (e.cashflow ? i : -1)).filter((i) => i >= 0),
     [book.equity],
@@ -1022,41 +1087,21 @@ export function Dashboard(props: {
     })
   }, [sleeveOk, book.equity])
   const tradeBench = useMemo(() => tradeBenchComparison(book.episodes, book.bars.SPY || book.bars['^GSPC'] || []), [book.episodes, book.bars])
-  const benchMissing = useMemo(() => {
-    const m: string[] = []
-    if (p.initialCapital == null) m.push('capital')
-    if (!p.cashflowComplete) m.push('cashflow')
-    if (p.equitySubsetOnly) m.push('subset')
-    return m
-  }, [p.initialCapital, p.cashflowComplete, p.equitySubsetOnly])
-  const sleeveMarkers = useMemo(() => {
-    if (!sleeveOk || !book.equity.length) return []
-    const peakIdx = book.equity.reduce((best, e, i) => (e.equity > book.equity[best].equity ? i : best), 0)
-    const troughIdx = book.equity.reduce((best, e, i) => (e.equity < book.equity[best].equity ? i : best), 0)
-    const out: Array<{ i: number; value: number; text: string; tone?: 'up' | 'down' }> = []
-    const last = book.equity.at(-1)!.equity
-    const span = Math.max(Math.abs(last), 1)
-    if (book.equity[peakIdx].equity > 0 && peakIdx !== book.equity.length - 1 && book.equity[peakIdx].equity - last > span * 0.08) {
-      const p = book.equity[peakIdx]
-      out.push({
-        i: peakIdx,
-        value: p.equity,
-        text: `峰值 ${p.date.slice(5)} ${money(p.equity)}`,
-        tone: 'up',
-      })
-    }
-    if (book.equity[troughIdx].equity < 0 && troughIdx !== book.equity.length - 1 && last - book.equity[troughIdx].equity > span * 0.08) {
-      const t = book.equity[troughIdx]
-      out.push({
-        i: troughIdx,
-        value: t.equity,
-        text: `谷底 ${t.date.slice(5)} ${money(t.equity)}`,
-        tone: 'down',
-      })
-    }
-    return out
-  }, [sleeveOk, book.equity])
-  const drawerOpen = Boolean(selected || insight || showAccountDrawer)
+  const pathMarkers = useMemo((): PathMarker[] => {
+    if (!book.equity.length || (!sleeveOk && !accountOk)) return []
+    const valueOf = (e: EquityPoint) => (accountOk ? e.index : e.equity)
+    const fmt = (e: EquityPoint) => (accountOk ? (e.index / 100).toFixed(3) : money(e.equity))
+    const peakIdx = book.equity.reduce((best, e, i) => (valueOf(e) > valueOf(book.equity[best]) ? i : best), 0)
+    const troughIdx = book.equity.reduce((best, e, i) => (valueOf(e) < valueOf(book.equity[best]) ? i : best), 0)
+    const lastI = book.equity.length - 1
+    const out: PathMarker[] = [
+      { i: peakIdx, value: valueOf(book.equity[peakIdx]), kicker: '峰值', amount: fmt(book.equity[peakIdx]), tone: 'up' },
+      { i: troughIdx, value: valueOf(book.equity[troughIdx]), kicker: '谷底', amount: fmt(book.equity[troughIdx]), tone: 'down' },
+      { i: lastI, value: valueOf(book.equity[lastI]), kicker: '当前', tone: 'now' },
+    ]
+    return out.filter((m, i, arr) => arr.findIndex((x) => x.i === m.i) === i)
+  }, [accountOk, sleeveOk, book.equity])
+  const drawerOpen = Boolean(selected || insight || showAccountDrawer || showHealth)
   const openInsight = (nextInsight: Insight) => {
     setSelected(null)
     setGroupReturn(null)
@@ -1093,10 +1138,7 @@ export function Dashboard(props: {
       {book.isSample ? (
         <div className="sample-bar">
           <strong>示例数据</strong>
-          <span>
-            {book.accountName} · {p.sampleStart} 至 {p.sampleEnd} · {p.closedCount} 笔复盘单元 · {p.uniqueOpenDays} 个开仓日
-            · 真实成交，未填期初净资产
-          </span>
+          <span>真实成交，未填期初净资产</span>
           <button type="button" className="ghost sm" onClick={props.onReset}>
             导入我的账本
           </button>
@@ -1114,16 +1156,15 @@ export function Dashboard(props: {
           <Brand small tagline="美股正股复盘台" />
           <h1>{book.isSample ? '示例账本' : book.accountName}</h1>
           <p className="scope-line">
-            {book.isSample ? '示例账本' : book.accountName}｜{p.sampleStart} 至 {p.sampleEnd}｜美股正股｜{p.closedCount}{' '}
-            笔闭环 · {p.uniqueOpenDays} 个开仓日
-            {props.stage ? <em className="compute-ok">{props.stage}</em> : null}
+            {book.isSample ? props.stage || '' : `${book.accountName}${props.stage ? ` ｜ ${props.stage}` : ''}`}
           </p>
         </div>
         <div className="hd-right">
+          <HealthBadge health={health} onClick={() => setShowHealth(true)} />
           <ThemeToggle />
-          <span className="pill">US Equities · Common stock</span>
+          <span className="pill print-hide">US Equities · Common stock</span>
           {!book.isSample ? (
-            <button type="button" className="ghost sm" onClick={props.onReset}>
+            <button type="button" className="ghost sm print-hide" onClick={props.onReset}>
               上传另一份
             </button>
           ) : null}
@@ -1137,18 +1178,18 @@ export function Dashboard(props: {
         </div>
       ) : null}
 
-      {book.warnings.length ? (
-        <details className="warn">
-          <summary>范围与口径说明（{book.warnings.length}）</summary>
-          <ul>
-            {book.warnings.map((w) => (
-              <li key={w.code + w.message}>{w.message}</li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
+      <details className="warn">
+        <summary>范围与口径说明（{book.warnings.length + 2}）</summary>
+        <ul>
+          <li>本期 = 这份导入覆盖的全部已平仓往返，不是自然月。</li>
+          <li>数据新鲜度：{book.isSample ? '示例账本内置成交' : '本机刚才这次分析'}。成交仍留在本机。</li>
+          {book.warnings.map((w) => (
+            <li key={w.code + w.message}>{w.message}</li>
+          ))}
+        </ul>
+      </details>
 
-      {filtered ? (
+      {filtered && tab === 'why' ? (
         <div className="filter-bar">
           <div>
             正在只看
@@ -1164,175 +1205,774 @@ export function Dashboard(props: {
         </div>
       ) : null}
 
-      {tab === 'ledger' ? (
-        <>
-          <section className="kpis">
-            <Stat
-              k={<span className="hint">{accountOk ? 'TWR' : '累计盯市盈亏'}</span>}
-              v={accountOk ? signedPct(p.twr) : signedMoney(p.netPnl)}
-              sub={
-                accountOk
-                  ? '整本账 · 已剥离出入金'
-                  : '含未实现持仓与费用，子账本口径'
-              }
-              tip={
-                accountOk
-                  ? '这是账户自己涨了多少，中途存进去、取出来的钱已经拿掉了。它不是你口袋里实际拿到的回报。'
-                  : '没有期初净资产时，不猜账户规模。这条是美股正股成交还原出来的现金加市值，起点为 0，也就是这段正股交易的盯市盈亏。'
-              }
-              onClick={() => openInsight({ kind: 'twr' })}
-            />
-            <Stat
-              k={<span className="hint">历史单笔均值</span>}
-              v={expectancy.value != null ? money(expectancy.value) : 'N/A'}
-              sub={
-                filtered
-                  ? '按所选交易重算'
-                  : `n=${expectancy.n}，仅已闭环持仓片段，不含未实现持仓`
-              }
-              tip="平均每笔交易赚或亏多少钱。置信区间若跨过 0，说明现在还不能称为稳定的正向或负向期望。"
-              onClick={() => openInsight({ kind: 'expectancy' })}
-            />
-            <Stat
-              k={<span className="hint">胜率</span>}
-              v={winRate.value != null ? pctPlain(winRate.value, 0) : 'N/A'}
-              sub={
-                filtered
-                  ? `按所选交易 · n=${winRate.n}`
-                  : `n=${winRate.n}${winRate.ci ? ` · 95% ${ciText(winRate.ci, 'pct', 0)}` : ''}`
-              }
-              tip="赚了钱的交易占几成。胜率高不等于整体赚钱。"
-              onClick={() => openInsight({ kind: 'winRate' })}
-            />
-            <Stat
-              k={<span className="hint">Profit Factor</span>}
-              v={profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? (profitFactor.value > 20 ? '> 20（极不稳定）' : profitFactor.value.toFixed(2)) : '+∞') : 'N/A'}
-              sub={
-                filtered
-                  ? '按所选交易重算'
-                  : profitFactor.value != null && !Number.isFinite(profitFactor.value)
-                    ? '毛利 / 毛亏 · 无亏损'
-                    : '毛利 / 毛亏'
-              }
-              tip="毛利除以毛亏。没有亏损时记为 +∞。大于 1 整体盈利，小于 1 整体亏损。"
-            />
-          </section>
-          <RegimeMixBar checkup={book.checkup} />
-          {!accountOk ? (
-            <div className="status-strip">
-              <b>账户级指标不可用</b>
-              <span>缺少期初净资产及完整现金流，XIRR 与相对基准暂不计算。</span>
-              <span className="spacer" />
-              <button type="button" className="btn-primary sm" onClick={openAccountSupplement}>
-                补充数据
-              </button>
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <div className="kpi-summary">
-          <span className="kpi-item">
-            <b>{accountOk ? (p.twr == null ? '—' : pctPlain(p.twr, 1)) : money(p.netPnl)}</b> {accountOk ? 'TWR' : '累计盈亏'}
-          </span>
-          <span className="kpi-sep">｜</span>
-          <span className="kpi-item">
-            <b>{winRate.value != null ? pctPlain(winRate.value, 0) : '—'}</b> 胜率
-          </span>
-          <span className="kpi-sep">｜</span>
-          <span className="kpi-item">
-            <b>{profitFactor.value != null ? (Number.isFinite(profitFactor.value) ? (profitFactor.value > 20 ? '> 20' : profitFactor.value.toFixed(2)) : '+∞') : '—'}</b> PF
-          </span>
-          <span className="kpi-sep">｜</span>
-          <span className={accountOk ? 'kpi-item ok' : 'kpi-item warn'}>
-            {accountOk ? '账户数据完整' : '账户数据不完整'}
-          </span>
-        </div>
-      )}
-
-      <nav className="tabs sticky-tabs">
+      <nav className="tabs sticky-tabs print-hide">
         {TABS.map((item) => (
           <button type="button" key={item.id} className={tab === item.id ? 'on' : ''} onClick={() => go(item.id)}>
-            {item.label}
+            <b>{item.label}</b>
+            <span className="tab-answer">{cover.summaries[item.id]}</span>
           </button>
         ))}
       </nav>
 
-      {tab === 'ledger' ? (
-        <article className="panel">
-          <h3>
-            {accountOk ? '账户财富路径' : '正股子账本盈亏走势'}
-            {!accountOk && sleeveOk ? (
-              <span className="pill" style={{ marginLeft: 8 }}>
-                子账本口径 · 包含估算值
-              </span>
-            ) : null}
-          </h3>
-          <p className="muted">
-            {accountOk
-              ? '账户财富指数，起点=1.00，已剥离出入金。三条对比曲线在「基准比较」。'
-              : sleeveOk
-                ? '展示已导入正股交易产生的累计盯市盈亏，不代表完整账户收益。缺少历史价格的日期使用最近可用价格估算。'
-                : naReason}
+      <div className={`tab-panel ${tab === 'what' ? 'on' : ''}`}>
+        <WhatPage
+          book={book}
+          cover={cover}
+          trips={closedAll}
+          onWhy={() => go('why')}
+          onOpenHealth={() => setShowHealth(true)}
+          onFillAccount={openAccountSupplement}
+          onPickTrip={goWhyTrip}
+          pathVisual={
+            fail ? (
+              <p className="tiny">路径校验未通过，本图禁用，避免把错误路径当成账户收益。</p>
+            ) : !book.equity.length ? (
+              <p className="tiny">还没有可画的正股路径。</p>
+            ) : (
+              <div className="path-stack">
+                {accountOk || sleeveOk ? (
+                  <BookPathChart
+                    mode={accountOk ? 'account' : 'sleeve'}
+                    equity={book.equity}
+                    cursor={cursor}
+                    range={range}
+                    marks={cfMarks}
+                    markers={pathMarkers}
+                    onCursor={setCursor}
+                    onRange={setRange}
+                  />
+                ) : (
+                  <p className="tiny">还没有可画的正股路径。</p>
+                )}
+                {range && range.hi !== range.lo ? (
+                  <p className="tiny path-foot">
+                    已框选 {book.equity[range.lo]?.date} 至 {book.equity[range.hi]?.date}。
+                    <button type="button" className="link" onClick={() => setRange(null)}>
+                      重置范围
+                    </button>
+                  </p>
+                ) : null}
+                <CoverDrawdown
+                  accountOk={accountOk}
+                  sleeveOk={sleeveOk}
+                  fail={!!fail}
+                  book={book}
+                  p={p}
+                  cursor={cursor}
+                  range={range}
+                  ddSeries={ddSeries}
+                  naReason={naReason}
+                  onCursor={setCursor}
+                  onRange={setRange}
+                  onPickDay={(i) => openInsight({ kind: 'day', point: book.equity[i] })}
+                />
+                {hover && cursor != null ? (
+                  <div
+                    className={`path-tip${cursor / Math.max(book.equity.length - 1, 1) > 0.72 ? ' right' : ''}`}
+                    style={{
+                      left: `calc(52px + ${cursor / Math.max(book.equity.length - 1, 1)} * (100% - 64px))`,
+                    }}
+                  >
+                    <b>{hover.date}</b>
+                    {accountOk ? (
+                      <span>账户财富 {(hover.index / 100).toFixed(3)}</span>
+                    ) : (
+                      <span>盯市盈亏 {money(hover.equity)}</span>
+                    )}
+                    <span>
+                      距高点{' '}
+                      {accountOk
+                        ? pct(hover.drawdown)
+                        : ddSeries && ddSeries[cursor] != null
+                          ? money(ddSeries[cursor])
+                          : '—'}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            )
+          }
+        />
+      </div>
+
+      <div className={`tab-panel ${tab === 'why' ? 'on' : ''}`}>
+      <AnalysisPage
+        prefs={prefs}
+        onPrefs={persistPrefs}
+        onExportCsv={exportTrips}
+        highlight={tab === 'why' ? focusAnchor : null}
+        cross={cross}
+        diagnoses={diagnoses}
+        onEvidence={goEvidence}
+      >
+        <h2 className="review-sec" id="sec-behavior">交易与行为</h2>
+        <div>
+          <div className="filter-row">
+            <span className="filter-k">看哪些交易</span>
+            <div className="sorts">
+              {(['all', 'long', 'short'] as const).map((side) => (
+                <button type="button" key={side} className={sideFilter === side ? 'on' : ''} onClick={() => setSideFilter(side)}>
+                  {side === 'all' ? '全部' : side === 'long' ? '多头' : '空头'}
+                </button>
+              ))}
+            </div>
+            <label className="filter-select">
+              股票
+              <select
+                value={symbolFilter[0] || ''}
+                onChange={(e) => setSymbolFilter(e.target.value ? [e.target.value] : [])}
+              >
+                <option value="">全部股票</option>
+                {symbols.map((sym) => (
+                  <option key={sym} value={sym}>
+                    {sym}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {filtered ? (
+            <p className="tiny">胜率和期望已按上面选中的交易重算。TWR 仍用整本账。</p>
+          ) : null}
+          <p className="why-layer-k">结论</p>
+          <article className="panel" id="quality">
+            <h3>交易质量</h3>
+            <QualityRead
+              trips={scoped}
+              winRate={winRate}
+              expectancy={expectancy}
+              profitFactor={profitFactor}
+              payoff={p.payoff}
+              filtered={filtered}
+              onWinRate={() => openInsight({ kind: 'winRate' })}
+              onExpectancy={() => openInsight({ kind: 'expectancy' })}
+            />
+          </article>
+          <p className="why-layer-k">证据</p>
+          <article className="panel">
+            <h3>盈亏贡献</h3>
+            <p className="muted">按股票聚合已实现盈亏，盈利在上、亏损在下。判断盈利是否集中在少数交易。</p>
+            <PnLBySymbol trips={scoped} />
+          </article>
+          <div className="grid-2">
+            <article className="panel" id="mae">
+              <h3>日线估算退出质量</h3>
+              <div className="metric-strip">
+                <span>
+                  捕获 <b>{p.capture.value == null ? '—' : pctPlain(p.capture.value, 0)}</b>
+                </span>
+                <span>
+                  恢复 <b>{p.recovery.value == null ? '—' : pctPlain(p.recovery.value, 0)}</b>
+                </span>
+                <span>
+                  可计算 <b>{p.pathComputable}</b>
+                </span>
+                <span>
+                  同日排除 <b>{p.pathSameDayExcluded}</b>
+                </span>
+                <span>
+                  缺行情 <b>{p.pathMissingExcluded}</b>
+                </span>
+              </div>
+              <details className="fold-block">
+                <summary>退出质量明细</summary>
+              <p className="muted">只用日线 OHLC 粗估，不知道盘中先后，也看不到同日路径。盈利样本很少时数字会显得过精，不当执行评价。</p>
+              <div className="kv-grid">
+                {p.capture.value != null ? (
+                  <>
+                    <span>盈利路径分解</span>
+                    <b>
+                      <CaptureBar capture={p.capture.value} n={p.capture.n} />
+                    </b>
+                  </>
+                ) : (
+                  <MetricLine k="盈利捕获率" m={p.capture} kind="pct" />
+                )}
+                <MetricLine k="亏损恢复率" m={p.recovery} kind="pct" />
+                <span>可计算 / 同日排除 / 缺行情</span>
+                <b>
+                  {p.pathComputable} / {p.pathSameDayExcluded} / {p.pathMissingExcluded}
+                </b>
+                <span>同日 MAE / MFE</span>
+                <b>
+                  <VChip label="不适用" tone="na" />
+                </b>
+                <span>滑点</span>
+                <b>
+                  <VChip
+                    label="无法计算"
+                    tone="fail"
+                    onClick={() => {
+                      const row = p.coverage.find((c) => c.item === '滑点')
+                      if (row) pickCoverage(row)
+                    }}
+                  />
+                </b>
+                <span>路径异常</span>
+                <b>{p.captureAnomalies} 笔退出超过日线估算 MFE</b>
+              </div>
+              </details>
+            </article>
+            <article className="panel wide">
+              <h3>ATR 标准化盈亏</h3>
+              {p.atrR.n === 0 ? (
+                <p className="tiny">
+                  没有足够日线，ATR-R 记为缺失，不用 2% 代替。可计算 {p.pathComputable} · 同日排除 {p.pathSameDayExcluded} · 缺行情{' '}
+                  {p.pathMissingExcluded}
+                </p>
+              ) : (
+                <>
+                  <p className="muted">
+                    R 单位 = 开仓前 ATR × 数量。净 R = 已实现盈亏 / R 单位（含费用）。没有足够日线记为缺失，不用 2% 代替。计划止损 R 本轮未接入。
+                  </p>
+                  <div className="kv-grid">
+                    <span>有效 n</span>
+                    <b>{p.atrR.n}</b>
+                    <span>平均净 R / 价差 R / 费用 R</span>
+                    <b>
+                      {p.atrR.mean != null ? p.atrR.mean.toFixed(2) : '—'} / {p.atrR.meanPrice != null ? p.atrR.meanPrice.toFixed(2) : '—'} /{' '}
+                      {p.atrR.meanFee != null ? p.atrR.meanFee.toFixed(2) : '—'}
+                    </b>
+                    <span>中位净 R</span>
+                    <b>{p.atrR.median != null ? p.atrR.median.toFixed(2) : '—'}</b>
+                    <span>左尾 5% / 10%</span>
+                    <b>
+                      {p.atrR.p05 != null ? p.atrR.p05.toFixed(2) : '—'} / {p.atrR.p10 != null ? p.atrR.p10.toFixed(2) : '—'}
+                    </b>
+                    <span>口径异常</span>
+                    <b>{p.atrR.flagged} 笔（费用占比过高、风险单位过小、|R|&gt;8、疑似未复权等）</b>
+                  </div>
+                  <RDistribution trips={scoped} />
+                </>
+              )}
+            </article>
+          </div>
+          <article className="panel" style={{ marginTop: 12 }}>
+            <h3>日线估算 MAE × MFE</h3>
+            {scatter.length === 0 ? (
+              <p className="tiny">
+                没有可画的跨日路径。同日往返不计算；缺日线记为缺失。可计算 {p.pathComputable} · 同日排除 {p.pathSameDayExcluded} ·
+                缺行情 {p.pathMissingExcluded}
+              </p>
+            ) : (
+              <>
+                <p className="muted">日线粗估，不知盘中先后。点一下打开路径。横轴越右越不利，纵轴越上越有利。不当精确执行评价。</p>
+                <Scatter
+                  points={scatter.map((t) => ({
+                    id: t.id,
+                    x: t.maePct || 0,
+                    y: t.mfePct || 0,
+                    up: t.realizedPnl >= 0,
+                    label: `${t.symbol} · ${money(t.realizedPnl)} · MAE ${t.maePct != null ? pctPlain(t.maePct, 1) : 'N/A'} · MFE ${t.mfePct != null ? pctPlain(t.mfePct, 1) : 'N/A'}`,
+                  }))}
+                  onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
+                />
+              </>
+            )}
+          </article>
+        <TradeBenchPanel
+          rows={tradeBench.rows}
+          n={tradeBench.n}
+          beat={tradeBench.beat}
+          medianExcess={tradeBench.medianExcess}
+          meanExcess={tradeBench.meanExcess}
+          onOpenTrip={openTrip}
+        />
+
+        <section id="freq" className="freq-block">
+          <h3>频率</h3>
+          <p className="tiny">每类做几笔、各自赚赔、路径长什么样。一次看完。</p>
+          <RegimeMixBar checkup={book.checkup} />
+          <article className="panel" style={{ marginTop: 24 }}>
+            <h3>各频率累计盈亏</h3>
+            <p className="muted">按平仓时间累计,看日内 / 短线 / 波段 / 长线各自到底在赚还是在亏。</p>
+            <MultiLine
+              height={220}
+              baseline={0}
+              tickFormat={moneyK}
+              dates={book.analytics.regimeCum.dates}
+              series={book.analytics.regimeCum.series.map((s) => ({
+                values: s.values,
+                color: REGIME_COLORS[s.regime],
+                width: 1.9,
+              }))}
+            />
+            <div className="scatter-legend">
+              {book.analytics.regimeCum.series.map((s) => (
+                <span key={s.regime}>
+                  <i style={{ color: REGIME_COLORS[s.regime] }}>●</i> {s.label}
+                </span>
+              ))}
+            </div>
+          </article>
+
+          <div className="grid-2" style={{ marginTop: 24 }}>
+            <GroupViz
+              id="regimes"
+              title="按频率(regime)"
+              rows={book.checkup.regimes}
+              onPick={(row) => openInsight({ kind: 'group', row, trips: book.episodes.filter((t) => t.regime === row.id) })}
+            />
+            <article className="panel">
+              <h3>收益率 × 持仓时长</h3>
+              <p className="muted">横轴对数持仓天,纵轴单笔收益率,按频率上色。点一个圆看那笔详情。</p>
+              <ColorScatter
+                height={240}
+                logX
+                xFormat={(v) => (v < 1 ? `${Math.round(v * 24)}h` : `${Math.round(v)}d`)}
+                yFormat={(v) => pct(v)}
+                onPick={(id) => openTrip(book.episodes.find((t) => t.id === id)!)}
+                points={book.episodes
+                  .filter((t) => t.status === 'closed' && t.holdMinutes > 0 && t.openPrice * t.qty > 0)
+                  .map((t) => ({
+                    id: t.id,
+                    x: t.holdMinutes / 1440,
+                    y: t.realizedPnl / (t.openPrice * t.qty),
+                    color: REGIME_COLORS[t.regime],
+                    label: `${t.symbol} · ${pct(t.realizedPnl / (t.openPrice * t.qty))} · ${holdLabel(t.holdMinutes)}`,
+                  }))}
+              />
+            </article>
+          </div>
+        </section>
+
+        <div>
+          <p className="muted" style={{ marginBottom: 12 }}>
+                        行为观察按持仓片段。n&lt;5 只列交易；5–9 探索性；10–29 弱结论；≥30 才谈规律。点一条打开该组。
           </p>
-          {fail ? (
-            <p className="tiny">路径校验未通过，本图禁用，避免把错误路径当成账户收益。</p>
-          ) : accountOk && book.equity.length ? (
-            <BookPathChart
-              mode="account"
-              equity={book.equity}
-              hover={hover}
-              cursor={cursor}
-              range={range}
-              marks={cfMarks}
-              onCursor={setCursor}
-              onRange={setRange}
-            />
-          ) : sleeveOk ? (
-            <BookPathChart
-              mode="sleeve"
-              equity={book.equity}
-              hover={hover}
-              cursor={cursor}
-              range={range}
-              marks={cfMarks}
-              markers={sleeveMarkers}
-              onCursor={setCursor}
-              onRange={setRange}
-            />
-          ) : (
-            <p className="tiny">还没有可画的正股路径。</p>
-          )}
-          {range && range.hi !== range.lo ? (
-            <p className="tiny">
-              已框选 {book.equity[range.lo]?.date} 至 {book.equity[range.hi]?.date}。交易级指标按开仓日筛选；账户级 TWR / XIRR /
-              回撤不重算。
-              <button type="button" className="link" onClick={() => setRange(null)}>
-                重置范围
+          {!book.checkup.sessionRelevant ? (
+            <p className="muted" style={{ marginBottom: 12 }}>
+              入场时段面板已隐藏:日内+短线仅 {book.checkup.sessionCohortN} 笔,样本太小,时段胜率是噪声。判错了?
+              <button
+                type="button"
+                className="ghost sm"
+                style={{ marginLeft: 8 }}
+                onClick={() => setShowAllLenses((v) => !v)}
+              >
+                {showAllLenses ? '收起' : '仍要展开全部镜头'}
               </button>
             </p>
-          ) : book.equity.length ? (
-            <p className="tiny">在图上拖动可框选查看区间。现金流日期有浅色标记。</p>
           ) : null}
-          {accountOk ? (
-            <p className="path-recon">
-              TWR {signedPct(p.twr)}
-              <span className="kpi-sep"> · </span>
-              已实现 {signedMoney(p.realizedPnl)}
-              <span className="kpi-sep"> · </span>
-              未实现 {signedMoney(p.unrealizedPnl)}
-            </p>
-          ) : sleeveOk ? (
-            <p className="path-recon">
-              已实现 {signedMoney(p.realizedPnl)}
-              <span className="kpi-sep"> · </span>
-              未实现 {signedMoney(p.unrealizedPnl)}
-              <span className="kpi-sep"> · </span>
-              勾稽 {signedMoney(p.reconDifference, 2)}
-              <span className="kpi-sep"> → </span>
-              累计 {signedMoney(p.netPnl)}
-            </p>
-          ) : null}
+          <div className="grid-2">
+            {book.checkup.sessionRelevant || showAllLenses ? (
+              <GroupViz
+                id="sessions"
+                title={`开盘 / 盘中 / 尾盘 · 仅 ${book.checkup.sessionCohortN} 笔日内+短线`}
+                rows={book.checkup.sessions}
+                onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+              />
+            ) : null}
+            <GroupViz
+              id="hold"
+              title="持仓时间"
+              rows={book.checkup.holdBuckets}
+              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+            />
+            <GroupViz
+              id="sides"
+              title="多头 / 空头"
+              rows={book.checkup.sides}
+              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+            />
+            <GroupViz
+              id="weekdays"
+              title="星期"
+              rows={book.checkup.weekdays}
+              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
+            />
+            <article className="panel">
+              <h3>处置效应与加仓</h3>
+              <p className="tiny">{book.checkup.disposition.fact}</p>
+              <SignedBars
+                items={[
+                  {
+                    id: 'disp',
+                    label: '盈亏持仓比',
+                    value: book.checkup.disposition.ratio,
+                    n: book.checkup.disposition.n,
+                  },
+                ]}
+                format={(v) => `${v.toFixed(2)}×`}
+              />
+              <p className="tiny">{book.checkup.tilt.fact}</p>
+              {book.checkup.tilt.nAfterLoss > 0 ? (
+                <CoverageMeter
+                  label="亏后再开仓"
+                  value={book.checkup.tilt.nTilt}
+                  of={book.checkup.tilt.nAfterLoss}
+                  note={book.checkup.tilt.sizeMultiple != null ? `${book.checkup.tilt.sizeMultiple.toFixed(2)}×` : undefined}
+                />
+              ) : (
+                <p className="tiny">没有「亏损后再开仓」样本。</p>
+              )}
+            </article>
+            <article className="panel">
+              <h3>追高覆盖</h3>
+              <p className="tiny">{book.checkup.chase.fact}</p>
+              {book.checkup.chase.total > 0 ? (
+                <CoverageMeter label="20 日窗口" value={book.checkup.chase.covered} of={book.checkup.chase.total} />
+              ) : (
+                <p className="tiny">没有可评估的开仓。</p>
+              )}
+              <div className="kv-grid">
+                <span>分位均值</span>
+                <b>{book.checkup.chase.mean != null ? book.checkup.chase.mean.toFixed(0) : 'N/A'}</b>
+                <span>分位≥80 盈亏</span>
+                <b className={book.checkup.chase.highN >= 10 ? clsPnl(book.checkup.chase.highPnl) : ''}>
+                  {money(book.checkup.chase.highPnl)}
+                </b>
+              </div>
+            </article>
+          </div>
 
+        </div>
+
+          <p className="why-layer-k">明细</p>
+          <div className="table-hd" id="trips">
+            <div className="sorts">
+              {(['time', 'pnl', 'r', 'hold'] as const).map((k) => (
+                <button type="button" key={k} className={sort === k ? 'on' : ''} onClick={() => setSort(k)}>
+                  {k === 'time' ? '时间' : k === 'pnl' ? '盈亏' : k === 'r' ? 'ATR标准化' : '持仓'}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="link" onClick={() => setShowFills((v) => !v)}>
+              {showFills ? '看往返' : '查看成交'}
+            </button>
+          </div>
+          {showFills ? (
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>代码</th>
+                  <th>方向</th>
+                  <th>数量</th>
+                  <th>价格</th>
+                  <th>费用</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...book.fills]
+                  .sort((a, b) => b.time.getTime() - a.time.getTime())
+                  .map((f) => (
+                    <tr key={f.id}>
+                      <td>{f.time.toLocaleString('zh-CN', { hour12: false })}</td>
+                      <td>
+                        {f.symbol}
+                        {f.kind === 'drip' ? <div className="muted">分红再投资</div> : null}
+                      </td>
+                      <td>{f.side === 'buy' ? '买' : '卖'}</td>
+                      <td>{f.qty}</td>
+                      <td>{f.price.toFixed(2)}</td>
+                      <td>{f.fees.toFixed(2)}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          ) : (
+            <>
+            <table className="grid trips">
+              <thead>
+                <tr>
+                  <th>持仓片段</th>
+                  <th>方向</th>
+                  <th>数量</th>
+                  <th>开 / 平</th>
+                  <th>净盈亏</th>
+                  <th>ATR标准化盈亏</th>
+                  <th>日线估算 MAE / MFE</th>
+                  <th>标记</th>
+                </tr>
+              </thead>
+              <tbody>
+                {closed.slice(0, showAllTrips ? undefined : 5).map((t) => (
+                  <tr
+                    key={t.id}
+                    id={`trip-${t.id}`}
+                    className={selected?.id === t.id || focusTrip === t.id ? 'on' : ''}
+                    onClick={() => openTrip(t)}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <td>
+                      <b>{t.symbol}</b>
+                      <div className="muted">{t.name}</div>
+                    </td>
+                    <td>{t.side === 'long' ? '多' : '空'}</td>
+                    <td>{t.qty}</td>
+                    <td>
+                      {t.openPrice.toFixed(2)} → {t.closePrice?.toFixed(2)}
+                    </td>
+                    <td className={clsPnl(t.realizedPnl)}>{money(t.realizedPnl)}</td>
+                    <td>
+                      {t.rMultiple != null ? `${signed(t.rMultiple)}R` : '—'}
+                      {(t.rFlags ?? []).length ? <div className="tiny muted">R 口径异常</div> : null}
+                      <div className="muted">
+                        {holdLabel(t.holdMinutes)} {sessionLabel(t)}
+                        {t.annualizedReturn != null && t.holdMinutes >= 10 * 1440
+                          ? ` · 年化 ${t.annualizedReturn > 10 ? '>1000%' : pct(t.annualizedReturn)}`
+                          : ''}
+                      </div>
+                    </td>
+                    <td>
+                      {t.maePct == null || t.mfePct == null ? (
+                        <div className="muted">{t.sameDay ? '不适用 · 同日不计算' : '未提供 · 缺行情'}</div>
+                      ) : (
+                        <>
+                          <MaeBar mae={t.maePct} mfe={t.mfePct} />
+                          <div className="muted">
+                            {pct(t.maePct)} · {pct(t.mfePct)} · 估算值
+                          </div>
+                        </>
+                      )}
+                    </td>
+                    <td>
+                      {t.tags
+                        .filter((tag) => tag !== 'episode')
+                        .map((tag) => {
+                          const chip = suspectedTagLabel(t, tag)
+                          return (
+                            <em key={tag} className={`tag ${chip.kind}`} title={chip.title}>
+                              {chip.text}
+                            </em>
+                          )
+                        })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {closed.length > 5 ? (
+              <button type="button" className="link" onClick={() => setShowAllTrips((v) => !v)}>
+                {showAllTrips ? '收起' : `展开全部 ${closed.length} 笔`}
+              </button>
+            ) : null}
+            </>
+          )}
+        </div>
+
+          <WhyLuck
+            line={cover.luckLine}
+            losePct={
+              book.analytics.monteCarlo
+                ? Math.round(
+                    (book.analytics.monteCarlo.terminals.filter((v) => v <= 0).length /
+                      book.analytics.monteCarlo.terminals.length) *
+                      100,
+                  )
+                : null
+            }
+            cleared={cover.cleared}
+          />
+          <h2 className="review-sec" id="sec-checks">
+            检验
+          </h2>
+          <article className="panel wide" id="mc">
+            <h3>蒙特卡洛：有放回抽样看运气</h3>
+            {book.analytics.monteCarlo ? (
+              (() => {
+                const mc = book.analytics.monteCarlo!
+                const pctile = Math.round(mc.terminalPctile * 100)
+                const lose = Math.round((mc.terminals.filter((v) => v <= 0).length / mc.terminals.length) * 100)
+                const ddPct = Math.round(mc.maxDDPctile * 100)
+                const verdict =
+                  pctile >= 70
+                    ? `偏走运 —— 有放回抽样里，约 ${pctile}% 的终值不如你这次。这次抽到的交易组合偏好运，别全记在方法上。`
+                    : pctile <= 30
+                      ? `偏背运 —— 约 ${100 - pctile}% 的抽样终值比你这次好。方法未必这么糟。`
+                      : `运气大致中性 —— 你的终值排在抽样结果中间（约第 ${pctile} 名 / 100）。`
+                return (
+                  <>
+                    <p className="verdict">
+                      {verdict}{' '}
+                      <span
+                        className="path-info"
+                        title={`从历史开仓日有放回抽取，凑满 ${mc.nTrades} 笔，重复 ${mc.rounds} 次。同一笔大赢可能被抽到多次。若只打乱顺序，总盈亏不变。回撤是交易序列回撤，不是账户净值回撤。`}
+                      >
+                        ⓘ
+                      </span>
+                    </p>
+                    <h4 className="tiny" style={{ margin: '12px 0 4px' }}>抽样终值（可变，因为有放回）</h4>
+                    <Histogram
+                      values={mc.terminals}
+                      bins={29}
+                      format={moneyK}
+                      markerValue={mc.realizedTerminal}
+                      markerLabel="你在这里"
+                    />
+                    <h4 className="tiny" style={{ margin: '16px 0 4px' }}>交易序列最大回撤（路径风险）</h4>
+                    <Histogram
+                      values={mc.maxDDs.map((v) => -v)}
+                      bins={21}
+                      format={moneyK}
+                      markerValue={-mc.realizedMaxDD}
+                      markerLabel="你的序列回撤"
+                    />
+                    <p className="tiny">{mc.note}</p>
+                    <details className="fold-block">
+                      <summary>方法说明</summary>
+                      <p className="tiny">
+                        从历史开仓日里有放回抽取，凑满 {mc.nTrades} 笔，重复 {mc.rounds} 次。同一笔大赢可能被抽到多次，所以最终盈亏会变。
+                        若只打乱这 {mc.nTrades} 笔的顺序，总盈亏不变，只会改回撤路径。这里的回撤是交易序列回撤（累计已实现的高峰回落），不是账户净值回撤。
+                      </p>
+                      <ul className="tiny plain-facts">
+                        <li>
+                          <b>{lose}%</b> 的抽样最终是亏钱的。{lose >= 55 ? '这套交易本身就偏亏,不只是路径运气。' : ''}
+                        </li>
+                        <li>
+                          你实际的交易序列最大回撤 <b>{moneyAbs(mc.realizedMaxDD)}</b>,比约 {ddPct}% 的抽样更深
+                          {ddPct >= 60 ? '（算偏难受的一档）' : ''}。
+                        </li>
+                        {mc.ddProb.slice(1).map((d, i) => (
+                          <li key={i}>
+                            还有约 <b>{Math.round(d.prob * 100)}%</b> 的可能,序列回撤会比 {moneyAbs(d.dd)} 更深。
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  </>
+                )
+              })()
+            ) : (
+              <p className="tiny">闭环不足 30 笔或开仓日过少,不跑蒙特卡洛。</p>
+            )}
+          </article>
+
+          <article className="panel">
+            <h3>单笔盈亏分布</h3>
+            <p className="muted">箱=中间一半的交易,竖线=中位,点=每一笔;极端单笔钉在两端做角标,不拉伸主体。</p>
+            {(() => {
+              const closed = book.episodes.filter((t) => t.status === 'closed')
+              if (closed.length < 4) return <p className="tiny">样本太少,不画分布。</p>
+              const s = p.tradeShape
+              const shape =
+                s.skew != null && s.skew > 0.5
+                  ? '你的盈亏是「多数小额 + 少数大赢」的形状'
+                  : s.skew != null && s.skew < -0.5
+                    ? '你的盈亏是「多数小赢 + 偶发巨亏」的形状'
+                    : '你的盈亏大致对称'
+              const fat = s.kurtosis != null && s.kurtosis > 3 ? ',尾部偏肥 —— 极端单笔比常态更常出现' : ''
+              return (
+                <>
+                  <p className="verdict">
+                    {shape}
+                    {fat}。最惨的 5% 交易,平均每笔亏 {s.cvar95 == null ? '—' : moneyAbs(s.cvar95)}。
+                  </p>
+                  <BoxStrip values={closed.map((t) => t.realizedPnl)} format={moneyK} />
+                  <p className="tiny">
+                    红点=亏损单、绿点=盈利单。偏度 {s.skew?.toFixed(1) ?? '—'} · 超额峰度 {s.kurtosis?.toFixed(1) ?? '—'} · 最差 5%
+                    门槛 {s.var95 == null ? '—' : money(s.var95)}。
+                  </p>
+                  <p className="tiny">{book.analytics.runs.note}</p>
+                </>
+              )
+            })()}
+          </article>
+
+          <article className="panel" id="sensitivity">
+            <h3>敏感性:结果稳不稳</h3>
+            <p className="muted">{book.sensitivity.note}</p>
+            {(() => {
+              const sv = book.sensitivity
+              const conc = sv.top1Share
+              const dropWin = sv.expectancyDropMaxWin
+              const concVerdict =
+                conc != null && conc >= 0.5
+                  ? `高度依赖极少数交易:毛利的 ${pctPlain(conc, 0)} 来自最大一笔。去掉它,历史单笔均值就从 ${money(sv.meanPnl ?? 0)} 掉到 ${dropWin == null ? '—' : money(dropWin)} —— 这更像被一两单撑起来,不是稳定的 edge。`
+                  : conc != null
+                    ? `盈利没有过度集中:最大一笔占毛利 ${pctPlain(conc, 0)},拿掉后单笔均值 ${dropWin == null ? '—' : money(dropWin)}。`
+                    : '没有毛利样本,不评估集中度。'
+              const c0 = sv.cost.find((c) => c.bps === 0)?.expectancy
+              const cHi = [...sv.cost].reverse().find((c) => c.expectancy != null)
+              const costText =
+                c0 != null && cHi && cHi.expectancy != null
+                  ? `把成本从 0 加到 ${cHi.bps}bp,单笔均值 ${money(c0)} → ${money(cHi.expectancy)},几乎不动 —— 结果对成本不敏感。`
+                  : null
+              const h1 = sv.firstHalfExpectancy
+              const h2 = sv.secondHalfExpectancy
+              return (
+                <>
+                  <p className="verdict">{concVerdict}</p>
+                  {conc != null ? (
+                    <div style={{ marginTop: 4 }}>
+                      <CoverageMeter label="最大一笔占毛利" value={conc} />
+                      {sv.top3Share != null ? <CoverageMeter label="前 3 笔" value={sv.top3Share} /> : null}
+                      {sv.top5Share != null ? <CoverageMeter label="前 5 笔" value={sv.top5Share} /> : null}
+                    </div>
+                  ) : null}
+                  {h1 != null && h2 != null ? (
+                    <p className="tiny">
+                      分两半看:前半 {money(h1)} → 后半 {money(h2)}({h2 > h1 ? '在变好' : h2 < h1 ? '在变差' : '基本持平'})。
+                    </p>
+                  ) : null}
+                  {costText ? <p className="tiny">{costText}</p> : null}
+                </>
+              )
+            })()}
+            <details className="fold-block">
+              <summary>更多细节</summary>
+            <div className="kv-grid">
+              <span>去掉最大盈利单后的历史单笔均值</span>
+              <b>{book.sensitivity.expectancyDropMaxWin == null ? '—' : money(book.sensitivity.expectancyDropMaxWin)}</b>
+              <span>去掉最大单日后的历史单笔均值</span>
+              <b>{book.sensitivity.expectancyDropMaxDay == null ? '—' : money(book.sensitivity.expectancyDropMaxDay)}</b>
+              <span>最大盈利单占总毛利</span>
+              <b>{book.sensitivity.maxWinShareGrossProfit == null ? '—' : pctPlain(book.sensitivity.maxWinShareGrossProfit, 0)}</b>
+              <span>最大亏损单占总毛亏</span>
+              <b>{book.sensitivity.maxLossShareGrossLoss == null ? '—' : pctPlain(book.sensitivity.maxLossShareGrossLoss, 0)}</b>
+              <span>最大单笔绝对盈亏占总绝对盈亏</span>
+              <b>{book.sensitivity.maxAbsShareTotalAbs == null ? '—' : pctPlain(book.sensitivity.maxAbsShareTotalAbs, 0)}</b>
+              <span>前 1 / 3 / 5 笔盈利占总毛利</span>
+              <b>
+                {[book.sensitivity.top1Share, book.sensitivity.top3Share, book.sensitivity.top5Share]
+                  .map((v) => (v == null ? '—' : pctPlain(v, 0)))
+                  .join(' / ')}
+              </b>
+              <span>均值 / 中位 / 截尾均值</span>
+              <b>
+                {[book.sensitivity.meanPnl, book.sensitivity.medianPnl, book.sensitivity.trimmedMean]
+                  .map((v) => (v == null ? '—' : money(v)))
+                  .join(' / ')}
+              </b>
+              <span>前半 / 后半历史单笔均值</span>
+              <b>
+                {book.sensitivity.firstHalfExpectancy == null ? '—' : money(book.sensitivity.firstHalfExpectancy)}
+                {' / '}
+                {book.sensitivity.secondHalfExpectancy == null ? '—' : money(book.sensitivity.secondHalfExpectancy)}
+              </b>
+              <span>FIFO vs 持仓片段</span>
+              <b>
+                {book.sensitivity.fifoVsEpisode.fifoN} / {book.sensitivity.fifoVsEpisode.episodeN} 笔 · 历史单笔均值{' '}
+                {book.sensitivity.fifoVsEpisode.fifoExp == null ? '—' : money(book.sensitivity.fifoVsEpisode.fifoExp)}
+                {' vs '}
+                {book.sensitivity.fifoVsEpisode.episodeExp == null ? '—' : money(book.sensitivity.fifoVsEpisode.episodeExp)}
+              </b>
+            </div>
+            <table className="grid trips">
+              <thead>
+                <tr>
+                  <th>额外成本</th>
+                  <th>历史单笔均值</th>
+                  <th>PF</th>
+                </tr>
+              </thead>
+              <tbody>
+                {book.sensitivity.cost.map((row) => (
+                  <tr key={row.bps}>
+                    <td>{row.bps} bps</td>
+                    <td>{row.expectancy == null ? '—' : money(row.expectancy)}</td>
+                    <td>{row.pf == null ? 'N/A' : finiteNum(row.pf)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            </details>
+          </article>
+        <details className="fold-block ledger-fold" id="sec-ledger">
+          <summary>核算 · 对账与覆盖（与「是什么 · 可信吗」同源）</summary>
+        <article className="panel" id="equity">
+          <p className="tiny">资金路径与回撤在「是什么」。这里只留月度、日历和对账。</p>
           {book.equity.length > 2 && (accountOk || sleeveOk) ? (
             <div className="grid-2" style={{ marginTop: 16 }}>
               <div>
@@ -1356,14 +1996,14 @@ export function Dashboard(props: {
           ) : null}
 
           {book.equity.length > 8 && (accountOk || sleeveOk) ? (
-            <article className="panel" style={{ marginTop: 16 }}>
-              <h3>每日盈亏日历</h3>
+            <details className="fold-block" style={{ marginTop: 16 }}>
+              <summary>每日盈亏日历</summary>
               <p className="muted">每格一个交易日,越绿当天赚得越多、越红亏得越多。一眼看整段哪几周在赚、哪几周在漏。</p>
               <CalendarHeatmap
                 days={book.equity.slice(1).map((e, i) => ({ date: e.date, value: e.equity - book.equity[i].equity }))}
                 format={money}
               />
-            </article>
+            </details>
           ) : null}
 
           <div className="grid-2" style={{ marginTop: 8 }}>
@@ -1553,1157 +2193,26 @@ export function Dashboard(props: {
           </details>
           </div>
         </article>
-      ) : null}
 
-      {tab === 'trades' ? (
-        <div>
-          <div className="filter-row">
-            <span className="filter-k">看哪些交易</span>
-            <div className="sorts">
-              {(['all', 'long', 'short'] as const).map((side) => (
-                <button type="button" key={side} className={sideFilter === side ? 'on' : ''} onClick={() => setSideFilter(side)}>
-                  {side === 'all' ? '全部' : side === 'long' ? '多头' : '空头'}
-                </button>
-              ))}
-            </div>
-            <label className="filter-select">
-              股票
-              <select
-                value={symbolFilter[0] || ''}
-                onChange={(e) => setSymbolFilter(e.target.value ? [e.target.value] : [])}
-              >
-                <option value="">全部股票</option>
-                {symbols.map((sym) => (
-                  <option key={sym} value={sym}>
-                    {sym}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          {filtered ? (
-            <p className="tiny">胜率和期望已按上面选中的交易重算。TWR 仍用整本账。</p>
-          ) : null}
-          <EdgePanel winRate={winRate} payoff={p.payoff} profitFactor={profitFactor} expectancy={expectancy} />
-          <article className="panel">
-            <h3>盈亏贡献</h3>
-            <p className="muted">按股票聚合已实现盈亏，盈利在上、亏损在下。判断盈利是否集中在少数交易。</p>
-            <PnLBySymbol trips={scoped} />
-          </article>
-          <div className="grid-2">
-            <article className="panel">
-              <h3>交易质量</h3>
-              <QualityRead
-                trips={scoped}
-                winRate={winRate}
-                expectancy={expectancy}
-                profitFactor={profitFactor}
-                payoff={p.payoff}
-                filtered={filtered}
-                onWinRate={() => openInsight({ kind: 'winRate' })}
-                onExpectancy={() => openInsight({ kind: 'expectancy' })}
-              />
-            </article>
-            <article className="panel">
-              <h3>日线估算退出质量</h3>
-              <p className="muted">只用日线 OHLC 粗估，不知道盘中先后，也看不到同日路径。盈利样本很少时数字会显得过精，不当执行评价。</p>
-              <div className="kv-grid">
-                {p.capture.value != null ? (
-                  <>
-                    <span>盈利路径分解</span>
-                    <b>
-                      <CaptureBar capture={p.capture.value} n={p.capture.n} />
-                    </b>
-                  </>
-                ) : (
-                  <MetricLine k="盈利捕获率" m={p.capture} kind="pct" />
-                )}
-                <MetricLine k="亏损恢复率" m={p.recovery} kind="pct" />
-                <span>可计算 / 同日排除 / 缺行情</span>
-                <b>
-                  {p.pathComputable} / {p.pathSameDayExcluded} / {p.pathMissingExcluded}
-                </b>
-                <span>同日 MAE / MFE</span>
-                <b>
-                  <VChip label="不适用" tone="na" />
-                </b>
-                <span>滑点</span>
-                <b>
-                  <VChip
-                    label="无法计算"
-                    tone="fail"
-                    onClick={() => {
-                      const row = p.coverage.find((c) => c.item === '滑点')
-                      if (row) pickCoverage(row)
-                    }}
-                  />
-                </b>
-                <span>路径异常</span>
-                <b>{p.captureAnomalies} 笔退出超过日线估算 MFE</b>
-              </div>
-            </article>
-            <article className="panel wide">
-              <h3>ATR 标准化盈亏</h3>
-              {p.atrR.n === 0 ? (
-                <p className="tiny">
-                  没有足够日线，ATR-R 记为缺失，不用 2% 代替。可计算 {p.pathComputable} · 同日排除 {p.pathSameDayExcluded} · 缺行情{' '}
-                  {p.pathMissingExcluded}
-                </p>
-              ) : (
-                <>
-                  <p className="muted">
-                    R 单位 = 开仓前 ATR × 数量。净 R = 已实现盈亏 / R 单位（含费用）。没有足够日线记为缺失，不用 2% 代替。计划止损 R 本轮未接入。
-                  </p>
-                  <div className="kv-grid">
-                    <span>有效 n</span>
-                    <b>{p.atrR.n}</b>
-                    <span>平均净 R / 价差 R / 费用 R</span>
-                    <b>
-                      {p.atrR.mean != null ? p.atrR.mean.toFixed(2) : '—'} / {p.atrR.meanPrice != null ? p.atrR.meanPrice.toFixed(2) : '—'} /{' '}
-                      {p.atrR.meanFee != null ? p.atrR.meanFee.toFixed(2) : '—'}
-                    </b>
-                    <span>中位净 R</span>
-                    <b>{p.atrR.median != null ? p.atrR.median.toFixed(2) : '—'}</b>
-                    <span>左尾 5% / 10%</span>
-                    <b>
-                      {p.atrR.p05 != null ? p.atrR.p05.toFixed(2) : '—'} / {p.atrR.p10 != null ? p.atrR.p10.toFixed(2) : '—'}
-                    </b>
-                    <span>口径异常</span>
-                    <b>{p.atrR.flagged} 笔（费用占比过高、风险单位过小、|R|&gt;8、疑似未复权等）</b>
-                  </div>
-                  <RDistribution trips={scoped} />
-                </>
-              )}
-            </article>
-          </div>
-          <article className="panel" style={{ marginTop: 12 }}>
-            <h3>日线估算 MAE × MFE</h3>
-            {scatter.length === 0 ? (
-              <p className="tiny">
-                没有可画的跨日路径。同日往返不计算；缺日线记为缺失。可计算 {p.pathComputable} · 同日排除 {p.pathSameDayExcluded} ·
-                缺行情 {p.pathMissingExcluded}
-              </p>
-            ) : (
-              <>
-                <p className="muted">日线粗估，不知盘中先后。点一下打开路径。横轴越右越不利，纵轴越上越有利。不当精确执行评价。</p>
-                <Scatter
-                  points={scatter.map((t) => ({
-                    id: t.id,
-                    x: t.maePct || 0,
-                    y: t.mfePct || 0,
-                    up: t.realizedPnl >= 0,
-                    label: `${t.symbol} · ${money(t.realizedPnl)} · MAE ${t.maePct != null ? pctPlain(t.maePct, 1) : 'N/A'} · MFE ${t.mfePct != null ? pctPlain(t.mfePct, 1) : 'N/A'}`,
-                  }))}
-                  onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
-                />
-              </>
-            )}
-          </article>
-          {scoped.some((t) => t.closeTime) ? (
-            <article className="panel" style={{ marginTop: 12 }}>
-              <h3>逐笔盈亏</h3>
-              <p className="muted">按平仓先后一笔一根，日历空档不再拉开。折线是累计已实现盈亏。点一下打开路径。</p>
-              <PnlSequence
-                points={scoped
-                  .filter((t) => t.closeTime)
-                  .map((t) => ({
-                    id: t.id,
-                    t: t.closeTime!.getTime(),
-                    v: t.realizedPnl,
-                    label: `${t.symbol} · ${money(t.realizedPnl)}`,
-                  }))}
-                format={money}
-                onPick={(id) => openTrip(closed.find((t) => t.id === id) || closedAll.find((t) => t.id === id)!)}
-              />
-            </article>
-          ) : null}
-          <div className="table-hd">
-            <div className="sorts">
-              {(['time', 'pnl', 'r', 'hold'] as const).map((k) => (
-                <button type="button" key={k} className={sort === k ? 'on' : ''} onClick={() => setSort(k)}>
-                  {k === 'time' ? '时间' : k === 'pnl' ? '盈亏' : k === 'r' ? 'ATR标准化' : '持仓'}
-                </button>
-              ))}
-            </div>
-            <button type="button" className="link" onClick={() => setShowFills((v) => !v)}>
-              {showFills ? '看往返' : '查看成交'}
-            </button>
-          </div>
-          {showFills ? (
-            <table className="grid">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>代码</th>
-                  <th>方向</th>
-                  <th>数量</th>
-                  <th>价格</th>
-                  <th>费用</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...book.fills]
-                  .sort((a, b) => b.time.getTime() - a.time.getTime())
-                  .map((f) => (
-                    <tr key={f.id}>
-                      <td>{f.time.toLocaleString('zh-CN', { hour12: false })}</td>
-                      <td>
-                        {f.symbol}
-                        {f.kind === 'drip' ? <div className="muted">分红再投资</div> : null}
-                      </td>
-                      <td>{f.side === 'buy' ? '买' : '卖'}</td>
-                      <td>{f.qty}</td>
-                      <td>{f.price.toFixed(2)}</td>
-                      <td>{f.fees.toFixed(2)}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          ) : (
-            <>
-            <table className="grid trips">
-              <thead>
-                <tr>
-                  <th>持仓片段</th>
-                  <th>方向</th>
-                  <th>数量</th>
-                  <th>开 / 平</th>
-                  <th>净盈亏</th>
-                  <th>ATR标准化盈亏</th>
-                  <th>日线估算 MAE / MFE</th>
-                  <th>标记</th>
-                </tr>
-              </thead>
-              <tbody>
-                {closed.slice(0, showAllTrips ? undefined : 15).map((t) => (
-                  <tr
-                    key={t.id}
-                    className={selected?.id === t.id ? 'on' : ''}
-                    onClick={() => openTrip(t)}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <td>
-                      <b>{t.symbol}</b>
-                      <div className="muted">{t.name}</div>
-                    </td>
-                    <td>{t.side === 'long' ? '多' : '空'}</td>
-                    <td>{t.qty}</td>
-                    <td>
-                      {t.openPrice.toFixed(2)} → {t.closePrice?.toFixed(2)}
-                    </td>
-                    <td className={clsPnl(t.realizedPnl)}>{money(t.realizedPnl)}</td>
-                    <td>
-                      {t.rMultiple != null ? `${signed(t.rMultiple)}R` : '—'}
-                      {(t.rFlags ?? []).length ? <div className="tiny muted">R 口径异常</div> : null}
-                      <div className="muted">
-                        {holdLabel(t.holdMinutes)} {sessionLabel(t)}
-                        {t.annualizedReturn != null && t.holdMinutes >= 10 * 1440
-                          ? ` · 年化 ${t.annualizedReturn > 10 ? '>1000%' : pct(t.annualizedReturn)}`
-                          : ''}
-                      </div>
-                    </td>
-                    <td>
-                      {t.maePct == null || t.mfePct == null ? (
-                        <div className="muted">{t.sameDay ? '不适用 · 同日不计算' : '未提供 · 缺行情'}</div>
-                      ) : (
-                        <>
-                          <MaeBar mae={t.maePct} mfe={t.mfePct} />
-                          <div className="muted">
-                            {pct(t.maePct)} · {pct(t.mfePct)} · 估算值
-                          </div>
-                        </>
-                      )}
-                    </td>
-                    <td>
-                      {t.tags
-                        .filter((tag) => tag !== 'episode')
-                        .map((tag) => {
-                          const chip = suspectedTagLabel(t, tag)
-                          return (
-                            <em key={tag} className={`tag ${chip.kind}`} title={chip.title}>
-                              {chip.text}
-                            </em>
-                          )
-                        })}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {closed.length > 15 ? (
-              <button type="button" className="link" onClick={() => setShowAllTrips((v) => !v)}>
-                {showAllTrips ? '收起' : `展开全部 ${closed.length} 笔`}
-              </button>
-            ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
+        </details>
+      </AnalysisPage>
+      </div>
 
-      {tab === 'riskbench' ? (
-        <div className="bench">
-          {!accountOk ? (
-            <>
-              <BenchUnavailablePanel missing={benchMissing} onSupplement={openAccountSupplement} />
-              <TradeBenchPanel
-                rows={tradeBench.rows}
-                n={tradeBench.n}
-                beat={tradeBench.beat}
-                medianExcess={tradeBench.medianExcess}
-                meanExcess={tradeBench.meanExcess}
-                onOpenTrip={openTrip}
-              />
-            </>
-          ) : (
-            <div className="grid-2">
-              <article className="panel wide">
-                <h3>三条财富曲线</h3>
-                <p className="muted">
-                  三条线都是财富指数，起点=1.00，已剥离出入金。现金为虚线，基准为灰实线。优先 SPY 复权全收益；没有 SPY 时用 SPX 价格指数（不含股息）。
-                </p>
-                {fail ? (
-                  <p className="tiny">路径校验未通过，本图禁用，避免把错误财富曲线当成账户收益。</p>
-                ) : book.equity.length ? (
-                  <div className="chart-wrap tall">
-                    <MultiLine
-                      height={260}
-                      baseline={100}
-                      cursor={cursor}
-                      range={range}
-                      marks={cfMarks}
-                      dates={book.equity.map((e) => e.date)}
-                      onCursor={setCursor}
-                      onRange={setRange}
-                      series={[
-                        { values: book.equity.map((e) => e.cashIndex), color: 'var(--t3)', width: 1.2, dash: '5 4' },
-                        { values: book.equity.map((e) => e.benchIndex), color: 'var(--t2)', width: 1.4 },
-                        { values: book.equity.map((e) => e.index), color: 'var(--gold)', fill: 'var(--gold-fill)', width: 2 },
-                      ]}
-                    />
-                    {hover ? (
-                      <div className="chart-tip">
-                        <b>{hover.date}</b>
-                        <span>账户财富 {(hover.index / 100).toFixed(3)}</span>
-                        <span>基准财富 {(hover.benchIndex / 100).toFixed(3)}</span>
-                        <span>相对财富比 {hover.benchIndex ? pct(hover.index / hover.benchIndex - 1) : '—'}</span>
-                        <span>当日收益 {dayRet(book.equity, cursor ?? 0) == null ? '—' : pct(dayRet(book.equity, cursor ?? 0)!)}</span>
-                        <span>净现金流 {hover.cashflow ? money(hover.cashflow) : '$0'}</span>
-                        <span>回撤 {pct(hover.drawdown)}</span>
-                        <span>净敞口 {pctPlain(hover.netExposure, 1)}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <p className="tiny">还没有可画的正股路径。</p>
-                )}
-                {range && range.hi !== range.lo ? (
-                  <p className="tiny">
-                    已框选 {book.equity[range.lo]?.date} 至 {book.equity[range.hi]?.date}。交易级指标按开仓日筛选；账户级 TWR / XIRR /
-                    回撤不重算。
-                    <button type="button" className="link" onClick={() => setRange(null)}>
-                      重置范围
-                    </button>
-                  </p>
-                ) : (
-                  <p className="tiny">在图上拖动可框选查看区间。现金流日期有浅色标记。</p>
-                )}
-              </article>
-              <article className="panel">
-                <h3>基准结果</h3>
-                <p className="muted">
-                  {p.benchKind === 'spy-total-return'
-                    ? '∏(1+rp)/∏(1+rb)−1，基准为 SPY 复权全收益。'
-                    : '∏(1+rp)/∏(1+rb)−1，基准为 SPX 价格指数，不含股息。'}
-                </p>
-                <div className="kv-grid">
-                  <span>账户终值</span>
-                  <b>{p.finalEquity == null ? 'N/A' : moneyAbs(p.finalEquity)}</b>
-                  <span>相对持有现金</span>
-                  <b>{signedPct(p.relativeCash)}</b>
-                  <span>相对基准财富</span>
-                  <b>
-                    <button type="button" className="link" onClick={() => openInsight({ kind: 'spx' })}>
-                      {signedPct(p.relativeSpx)}
-                    </button>
-                  </b>
-                </div>
-              </article>
-              <article className="panel">
-                <h3>超额收益诊断（Alpha）</h3>
-                {!p.alpha || !p.alpha.valid ? (
-                  <p className="tiny">{p.alpha?.invalidReason || '暂不可用：回归序列未通过一致性校验。'}</p>
-                ) : (
-                  <>
-                    <p className="muted">需要账户日收益序列与同期基准；结果是回归估计，不等同于实际累计超额收益。</p>
-                    <div className="kv-grid">
-                      <span>对齐后的日收益 n</span>
-                      <b>
-                        {p.alpha.n} · {p.alpha.start} → {p.alpha.end}
-                      </b>
-                      <span>年化 α 点估计</span>
-                      <b>{p.closedCount >= 30 ? pct(p.alpha.annualized) : `${pct(p.alpha.annualized)}（仅点估计）`}</b>
-                      <span>标准误 / 95% 区间</span>
-                      <b>
-                        {pct(p.alpha.se)} · {pct(p.alpha.ciLo)} – {pct(p.alpha.ciHi)}
-                      </b>
-                      <span>β / 标准误</span>
-                      <b>
-                        {p.alpha.beta.toFixed(2)} / {p.alpha.betaSe.toFixed(2)}
-                      </b>
-                      <span>R²</span>
-                      <b>{p.alpha.r2.toFixed(2)}</b>
-                      <span>无风险利率</span>
-                      <b>{p.alpha.rfSource}</b>
-                      <span>频率 / 年化 / 标准误</span>
-                      <b>
-                        {p.alpha.freq} · ×252 · {p.alpha.seMethod}
-                      </b>
-                      <span>口径</span>
-                      <b className="tiny">{p.alpha.basis}</b>
-                    </div>
-                  </>
-                )}
-              </article>
-            </div>
-          )}
-        </div>
-      ) : null}
-
-      {tab === 'riskbench' ? (
-        <div className="grid-2">
-          <article className="panel wide">
-            <h3>
-              {accountOk ? '回撤' : '正股子账本金额回落'}
-              {!accountOk && sleeveOk ? (
-                <span className="pill" style={{ marginLeft: 8 }}>
-                  子账本口径 · 非账户回撤
-                </span>
-              ) : null}
-            </h3>
-            <p className="muted">
-              {accountOk
-                ? '这是账户回撤：现金流调整后的净值/TWR 路径。出入金已被剥离，不会单独制造回撤跳变。'
-                : sleeveOk
-                  ? '这是正股子账本金额回落，不是账户回撤率。缺期初净资产时不能算账户回撤。交易序列回撤（按平仓顺序累加已实现）在「可信度 → 蒙特卡洛」。'
-                  : naReason}
-            </p>
-            <p className="tiny">
-              三种回撤不要混读：账户回撤看净资产路径；子账本回撤看正股盯市金额；交易序列回撤只把已实现盈亏按平仓顺序累加，忽略持仓市值与出入金。
-            </p>
-            {book.warnings.some((w) => w.code === 'split-suspect' || w.code === 'splits') ? (
-              <div className="banner cannot-prove">
-                <strong>检测到疑似公司行动（拆股/非市场性跳变），金额回落可能失真。</strong>
-                <div>详见顶部「范围与口径说明」中的拆股与跳变提示。</div>
-              </div>
-            ) : null}
-            <div className="dd-split">
-              {fail ? (
-                <p className="tiny">路径异常，回撤图禁用。</p>
-              ) : accountOk && book.equity.length ? (
-                <div className="chart-wrap tall">
-                  <MultiLine
-                    height={260}
-                    baseline={0}
-                    tickFormat={(v) => pct(v)}
-                    dates={book.equity.map((e) => e.date)}
-                    cursor={cursor}
-                    range={range}
-                    onCursor={setCursor}
-                    onRange={setRange}
-                    onPick={(i) => openInsight({ kind: 'day', point: book.equity[i] })}
-                    endLabel={
-                      book.equity.length
-                        ? {
-                            value: book.equity[book.equity.length - 1].drawdown,
-                            text: `当前 ${pct(book.equity[book.equity.length - 1].drawdown)}`,
-                          }
-                        : undefined
-                    }
-                    markers={
-                      troughIdx != null &&
-                      troughIdx !== book.equity.length - 1 &&
-                      troughIdx / Math.max(book.equity.length - 1, 1) <= 0.72
-                        ? [
-                            {
-                              i: troughIdx,
-                              value: book.equity[troughIdx].drawdown,
-                              text: `谷底 ${pct(book.equity[troughIdx].drawdown)}`,
-                              tone: 'down',
-                            },
-                          ]
-                        : []
-                    }
-                    series={[{ values: book.equity.map((e) => e.drawdown), color: 'var(--gold)', width: 2 }]}
-                  />
-                  {hover ? (
-                    <div className="chart-tip compact">
-                      <b>{hover.date}</b>
-                      <span>回撤 {pct(hover.drawdown)}</span>
-                      <span>账户财富 {(hover.index / 100).toFixed(3)}</span>
-                    </div>
-                  ) : null}
-                </div>
-              ) : sleeveOk && ddSeries ? (
-                <div className="chart-wrap tall">
-                  <MultiLine
-                    height={260}
-                    baseline={0}
-                    tickFormat={moneyK}
-                    dates={book.equity.map((e) => e.date)}
-                    cursor={cursor}
-                    range={range}
-                    onCursor={setCursor}
-                    onRange={setRange}
-                    onPick={(i) => openInsight({ kind: 'day', point: book.equity[i] })}
-                    endLabel={
-                      ddSeries.length
-                        ? {
-                            value: ddSeries[ddSeries.length - 1] ?? 0,
-                            text: `当前 ${moneyK(ddSeries[ddSeries.length - 1] ?? 0)}`,
-                          }
-                        : undefined
-                    }
-                    markers={
-                      troughIdx != null &&
-                      ddSeries[troughIdx] != null &&
-                      troughIdx !== ddSeries.length - 1 &&
-                      troughIdx / Math.max(ddSeries.length - 1, 1) <= 0.72
-                        ? [
-                            {
-                              i: troughIdx,
-                              value: ddSeries[troughIdx],
-                              text: `谷底 ${moneyK(ddSeries[troughIdx])}`,
-                              tone: 'down',
-                            },
-                          ]
-                        : []
-                    }
-                    series={[{ values: ddSeries, color: 'var(--gold)', width: 2 }]}
-                  />
-                  {hover ? (
-                    <div className="chart-tip compact">
-                      <b>{hover.date}</b>
-                      <span>盯市盈亏 {money(hover.equity)}</span>
-                      <span>距高点 {ddSeries[cursor ?? 0] != null ? money(ddSeries[cursor ?? 0]) : '—'}</span>
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <p className="tiny">还没有可画的正股路径。</p>
-              )}
-              <div className="dd-facts">
-                <div className="drawer-k">{accountOk ? '来自同一条账户财富曲线' : '来自正股盯市盈亏曲线'}</div>
-                <h4>
-                  {accountOk ? '最大回撤' : '最大金额回落'}{' '}
-                  {accountOk ? (
-                    p.maxDrawdown == null ? (
-                      'N/A'
-                    ) : (
-                      <span className="down">{pct(p.maxDrawdown)}</span>
-                    )
-                  ) : p.maxDrawdownUsd ? (
-                    <span className="down">−{moneyAbs(p.maxDrawdownUsd)}</span>
-                  ) : (
-                    'N/A'
-                  )}
-                </h4>
-                <dl className="kv">
-                  <div>
-                    <dt>{accountOk ? '开始' : '高点日期'}</dt>
-                    <dd>{p.ddStart || '—'}</dd>
-                  </div>
-                  <div>
-                    <dt>谷底日期</dt>
-                    <dd>{p.ddTrough || '—'}</dd>
-                  </div>
-                  <div>
-                    <dt>恢复</dt>
-                    <dd>{p.ddRecover || (p.currentlyUnderwater ? '尚未恢复' : '—')}</dd>
-                  </div>
-                  {accountOk ? (
-                    <div>
-                      <dt>回撤金额</dt>
-                      <dd>{p.maxDrawdown == null ? 'N/A' : moneyAbs(p.maxDrawdownUsd)}</dd>
-                    </div>
-                  ) : (
-                    <div>
-                      <dt>水下天数</dt>
-                      <dd>
-                        {p.underwaterDays} 个日历日
-                        {p.underwaterEnd ? (
-                          <span className="muted">
-                            （{p.ddRecover ? '至恢复' : '至当前分析截止'} {p.underwaterEnd}）
-                          </span>
-                        ) : null}
-                      </dd>
-                    </div>
-                  )}
-                  <div>
-                    <dt>期间出金</dt>
-                    <dd>
-                      {accountOk
-                        ? moneyAbs(p.withdrawals)
-                        : !p.cashflowComplete
-                          ? '未确认'
-                          : p.withdrawals > 0
-                            ? moneyAbs(p.withdrawals)
-                            : '$0（用户确认）'}
-                    </dd>
-                  </div>
-                </dl>
-                <p className="tiny">
-                  {accountOk
-                    ? '回撤比例来自 TWR 财富曲线。出入金已被剥离，不会单独制造回撤跳变。'
-                    : '已导入正股子账本曾从历史高点回落上述金额；由于缺少完整账户净资产与现金流，无法判断这相当于账户资产的百分之多少。'}
-                </p>
-              </div>
-            </div>
-          </article>
-          <div className="grid-2">
-          <article className="panel">
-            <h3>风险数字</h3>
-            <p className="muted">
-              {accountOk
-                ? `夏普与索提诺都用同一套 rf（${p.rf.approx === 'missing-zero' ? '缺失按 0 近似' : '报价近似'} · ${p.rf.source} · ${p.rf.version}${p.rf.lastDate ? ` · 截止 ${p.rf.lastDate}` : ''}）。索提诺门槛是 rf，不是 0。`
-                : sleeveOk
-                  ? '缺少期初净资产与完整现金流，不计算账户回撤率及风险调整收益。金额回落与水下时长仍可看。'
-                  : naReason}
-            </p>
-            <div className="kv-grid">
-              <span>年化波动</span>
-              <b>{p.volAnn == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : pct(p.volAnn)}</b>
-              <span>最大回撤率</span>
-              <b>
-                {p.maxDrawdown == null ? (
-                  <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" />
-                ) : (
-                  <span className="down">{pct(p.maxDrawdown)}</span>
-                )}
-              </b>
-              <span>回撤金额</span>
-              <b>{p.maxDrawdownUsd ? moneyAbs(p.maxDrawdownUsd) : <VChip label="无法计算" tone="na" />}</b>
-              <span>Ulcer</span>
-              <b>{p.ulcer == null ? <VChip label={sleeveOk ? '待补账户数据' : '无法计算'} tone="na" /> : p.ulcer.toFixed(3)}</b>
-              <span>水下天数</span>
-              <b>
-                {p.underwaterDays}
-                {p.underwaterEnd ? (
-                  <div className="tiny">
-                    {p.ddRecover ? '至恢复' : '至当前分析截止'} {p.underwaterEnd}
-                  </div>
-                ) : null}
-              </b>
-              <span>当前水下</span>
-              <b>{p.currentlyUnderwater ? '是' : '否'}</b>
-              <span>平均毛敞口</span>
-              <b>{p.grossExposureMean == null ? <VChip label="无法计算" tone="na" /> : pctPlain(p.grossExposureMean, 0)}</b>
-              <span>平均净敞口</span>
-              <b>{p.netExposureMean == null ? <VChip label="无法计算" tone="na" /> : pctPlain(p.netExposureMean, 0)}</b>
-            </div>
-          </article>
-          <article className="panel">
-            <h3>回报质量比率</h3>
-            <p className="muted">条上红/黄/绿 = 差/中/好区间,黑标是你的值,竖线是基准。都是账户级指标,没填期初净资产时显示待补。</p>
-            {(() => {
-              const bc = p.benchCapture
-              const good3 = [
-                { to: 0, tone: 'bad' as const },
-                { to: 1, tone: 'mid' as const },
-                { to: 3, tone: 'good' as const },
-              ]
-              const rows: Array<{
-                label: string
-                value: number | null
-                text?: string
-                domain: [number, number]
-                bands: Array<{ to: number; tone: 'bad' | 'mid' | 'good' }>
-                ref: number
-                hint?: string
-              }> = [
-                { label: '夏普', value: p.sharpe ?? null, text: p.sharpe?.toFixed(2), domain: [-1, 3], bands: good3, ref: 0, hint: '风险调整后收益。>1 不错,>2 优秀。' },
-                { label: '索提诺', value: p.sortino ?? null, text: p.sortino?.toFixed(2), domain: [-1, 3], bands: good3, ref: 0, hint: '只惩罚下行波动的夏普。门槛 rf。' },
-                { label: 'Calmar', value: p.calmar ?? null, text: p.calmar?.toFixed(2), domain: [-1, 3], bands: good3, ref: 0, hint: '年化收益 / 最大回撤。' },
-                { label: 'Martin', value: p.ulcerPerf ?? null, text: p.ulcerPerf?.toFixed(2), domain: [-1, 3], bands: good3, ref: 0, hint: '年化超额 / Ulcer,回撤深度加权。' },
-                { label: 'Omega', value: p.omega ?? null, text: p.omega?.toFixed(2), domain: [0, 3], bands: [{ to: 1, tone: 'bad' }, { to: 1.5, tone: 'mid' }, { to: 3, tone: 'good' }], ref: 1, hint: '阈值 0 的概率加权收益比,>1 为正。' },
-                { label: '信息比率', value: p.infoRatio ?? null, text: p.infoRatio?.toFixed(2), domain: [-1, 2], bands: [{ to: 0, tone: 'bad' }, { to: 0.5, tone: 'mid' }, { to: 2, tone: 'good' }], ref: 0, hint: '年化超额 / 跟踪误差。' },
-                { label: '上行捕获', value: bc?.upside ?? null, text: bc?.upside != null ? pctPlain(bc.upside, 0) : undefined, domain: [0, 1.5], bands: [{ to: 0.8, tone: 'bad' }, { to: 1, tone: 'mid' }, { to: 1.5, tone: 'good' }], ref: 1, hint: '基准涨时你跟到几成,越高越好。' },
-                { label: '下行捕获', value: bc?.downside ?? null, text: bc?.downside != null ? pctPlain(bc.downside, 0) : undefined, domain: [0, 1.5], bands: [{ to: 1, tone: 'good' }, { to: 1.2, tone: 'mid' }, { to: 1.5, tone: 'bad' }], ref: 1, hint: '基准跌时你跌了几成,越低越抗跌。' },
-                { label: '跑赢率', value: p.battingAvg ?? null, text: p.battingAvg != null ? pctPlain(p.battingAvg, 0) : undefined, domain: [0, 1], bands: [{ to: 0.5, tone: 'bad' }, { to: 0.55, tone: 'mid' }, { to: 1, tone: 'good' }], ref: 0.5, hint: '跑赢基准的交易日占比。' },
-              ]
-              return rows.map((r) => (
-                <BulletRow
-                  key={r.label}
-                  label={r.label}
-                  value={r.value}
-                  valueText={r.text}
-                  domain={r.domain}
-                  bands={r.bands}
-                  refMark={r.ref}
-                  naText={sleeveOk ? '待补账户数据' : '—'}
-                  hint={r.hint}
-                />
-              ))
-            })()}
-          </article>
-          </div>
-          {accountOk && book.equity.some((e) => e.rollingSharpe != null) ? (
-            <article className="panel wide">
-              <h3>滚动 Sharpe / Beta(63 日窗)</h3>
-              <p className="muted">你在变好还是变差?beta 有没有漂?窗口未填满的前段不画。</p>
-              {(() => {
-                const pts = book.equity.filter((e) => e.rollingSharpe != null)
-                const dates = pts.map((e) => e.date)
-                return (
-                  <div className="grid-2">
-                    <MultiLine
-                      height={160}
-                      baseline={0}
-                      tickFormat={(v) => v.toFixed(2)}
-                      dates={dates}
-                      series={[{ values: pts.map((e) => e.rollingSharpe as number), color: 'var(--gold)', width: 1.8 }]}
-                    />
-                    <MultiLine
-                      height={160}
-                      baseline={0}
-                      tickFormat={(v) => v.toFixed(2)}
-                      dates={dates}
-                      series={[{ values: pts.map((e) => e.rollingBeta ?? 0), color: 'var(--t2)', width: 1.8 }]}
-                    />
-                  </div>
-                )
-              })()}
-              <p className="tiny">左:滚动 Sharpe(0 为无风险调整后打平)。右:滚动 Beta(对基准的敏感度)。</p>
-            </article>
-          ) : null}
-          {accountOk && book.equity.length ? (
-            <article className="panel wide">
-              <h3>敞口</h3>
-              <p className="muted">毛敞口与净敞口来自当日持仓市值 / 账户净值。没有净值时不估算。</p>
-              <div className="chart-wrap">
-                <MultiLine
-                  height={200}
-                  baseline={0}
-                  tickFormat={(v) => pctPlain(v, 0)}
-                  dates={book.equity.map((e) => e.date)}
-                  cursor={cursor}
-                  onCursor={setCursor}
-                  endLabel={
-                    book.equity.length
-                      ? {
-                          value: book.equity[book.equity.length - 1].netExposure,
-                          text: `净 ${pctPlain(book.equity[book.equity.length - 1].netExposure, 0)}`,
-                        }
-                      : undefined
-                  }
-                  series={[
-                    { values: book.equity.map((e) => e.grossExposure), color: 'var(--t3)', width: 1.2, dash: '5 4' },
-                    { values: book.equity.map((e) => e.netExposure), color: 'var(--gold)', width: 2 },
-                  ]}
-                />
-              </div>
-              <p className="tiny">虚线毛敞口 · 金线净敞口</p>
-            </article>
-          ) : null}
-        </div>
-      ) : null}
-
-      {tab === 'trades' ? (
-        <div>
-          <p className="muted" style={{ marginBottom: 12 }}>
-            行为观察按持仓片段。n&lt;5 只列交易；5–9 探索性；10–29 弱结论；≥30 才谈规律。点一条打开该组。
-          </p>
-          {!book.checkup.sessionRelevant ? (
-            <p className="muted" style={{ marginBottom: 12 }}>
-              入场时段面板已隐藏:日内+波段仅 {book.checkup.sessionCohortN} 笔,样本太小,时段胜率是噪声。判错了?
-              <button
-                type="button"
-                className="ghost sm"
-                style={{ marginLeft: 8 }}
-                onClick={() => setShowAllLenses((v) => !v)}
-              >
-                {showAllLenses ? '收起' : '仍要展开全部镜头'}
-              </button>
-            </p>
-          ) : null}
-          <div className="grid-2">
-            {book.checkup.sessionRelevant || showAllLenses ? (
-              <GroupViz
-                title={`开盘 / 盘中 / 尾盘 · 仅 ${book.checkup.sessionCohortN} 笔日内+波段`}
-                rows={book.checkup.sessions}
-                onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-              />
-            ) : null}
-            <GroupViz
-              title="持仓时间"
-              rows={book.checkup.holdBuckets}
-              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-            />
-            <GroupViz
-              title="多头 / 空头"
-              rows={book.checkup.sides}
-              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-            />
-            <GroupViz
-              title="星期"
-              rows={book.checkup.weekdays}
-              onPick={(row) => openInsight({ kind: 'group', row, trips: tripsForGroup(row.id, book.episodes) })}
-            />
-            <article className="panel">
-              <h3>处置效应与加仓</h3>
-              <p className="tiny">{book.checkup.disposition.fact}</p>
-              <SignedBars
-                items={[
-                  {
-                    id: 'disp',
-                    label: '盈亏持仓比',
-                    value: book.checkup.disposition.ratio,
-                    n: book.checkup.disposition.n,
-                  },
-                ]}
-                format={(v) => `${v.toFixed(2)}×`}
-              />
-              <p className="tiny">{book.checkup.tilt.fact}</p>
-              {book.checkup.tilt.nAfterLoss > 0 ? (
-                <CoverageMeter
-                  label="亏后再开仓"
-                  value={book.checkup.tilt.nTilt}
-                  of={book.checkup.tilt.nAfterLoss}
-                  note={book.checkup.tilt.sizeMultiple != null ? `${book.checkup.tilt.sizeMultiple.toFixed(2)}×` : undefined}
-                />
-              ) : (
-                <p className="tiny">没有「亏损后再开仓」样本。</p>
-              )}
-            </article>
-            <article className="panel">
-              <h3>追高覆盖</h3>
-              <p className="tiny">{book.checkup.chase.fact}</p>
-              {book.checkup.chase.total > 0 ? (
-                <CoverageMeter label="20 日窗口" value={book.checkup.chase.covered} of={book.checkup.chase.total} />
-              ) : (
-                <p className="tiny">没有可评估的开仓。</p>
-              )}
-              <div className="kv-grid">
-                <span>分位均值</span>
-                <b>{book.checkup.chase.mean != null ? book.checkup.chase.mean.toFixed(0) : 'N/A'}</b>
-                <span>分位≥80 盈亏</span>
-                <b className={book.checkup.chase.highN >= 10 ? clsPnl(book.checkup.chase.highPnl) : ''}>
-                  {money(book.checkup.chase.highPnl)}
-                </b>
-              </div>
-            </article>
-          </div>
-
-          <article className="panel" style={{ marginTop: 24 }}>
-            <h3>各频率累计盈亏</h3>
-            <p className="muted">按平仓时间累计,看日内 / 波段 / 持仓 / 长线各自到底在赚还是在亏。</p>
-            <MultiLine
-              height={220}
-              baseline={0}
-              tickFormat={moneyK}
-              dates={book.analytics.regimeCum.dates}
-              series={book.analytics.regimeCum.series.map((s) => ({
-                values: s.values,
-                color: REGIME_COLORS[s.regime],
-                width: 1.9,
-              }))}
-            />
-            <div className="scatter-legend">
-              {book.analytics.regimeCum.series.map((s) => (
-                <span key={s.regime}>
-                  <i style={{ color: REGIME_COLORS[s.regime] }}>●</i> {s.label}
-                </span>
-              ))}
-            </div>
-          </article>
-
-          <div className="grid-2" style={{ marginTop: 24 }}>
-            <GroupViz
-              title="按频率(regime)"
-              rows={book.checkup.regimes}
-              onPick={(row) => openInsight({ kind: 'group', row, trips: book.episodes.filter((t) => t.regime === row.id) })}
-            />
-            <article className="panel">
-              <h3>收益率 × 持仓时长</h3>
-              <p className="muted">横轴对数持仓天,纵轴单笔收益率,按频率上色。点一个圆看那笔详情。</p>
-              <ColorScatter
-                height={240}
-                logX
-                xFormat={(v) => (v < 1 ? `${Math.round(v * 24)}h` : `${Math.round(v)}d`)}
-                yFormat={(v) => pct(v)}
-                onPick={(id) => openTrip(book.episodes.find((t) => t.id === id)!)}
-                points={book.episodes
-                  .filter((t) => t.status === 'closed' && t.holdMinutes > 0 && t.openPrice * t.qty > 0)
-                  .map((t) => ({
-                    id: t.id,
-                    x: t.holdMinutes / 1440,
-                    y: t.realizedPnl / (t.openPrice * t.qty),
-                    color: REGIME_COLORS[t.regime],
-                    label: `${t.symbol} · ${pct(t.realizedPnl / (t.openPrice * t.qty))} · ${holdLabel(t.holdMinutes)}`,
-                  }))}
-              />
-            </article>
-          </div>
-        </div>
-      ) : null}
-
-      {tab === 'trust' ? (
-        <div className="grid-2">
-          <article className="panel">
-            <h3>对账与数据完整性</h3>
-            <p className="muted">缺失不是零。三种回撤、两种往返口径、日线估算都写在这里，避免混读。</p>
-            <div className="kv-grid">
-              <span>核算往返（FIFO）闭环</span>
-              <b>{book.trips.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP')).length} 笔</b>
-              <span>复盘持仓片段（episode）闭环</span>
-              <b>{book.credibility.closedCount} 笔</b>
-              <span>独立开仓日</span>
-              <b>{book.credibility.uniqueOpenDays}</b>
-              <span>日收益观测</span>
-              <b>{book.credibility.dayCount}</b>
-              <span>样本起止</span>
-              <b>
-                {book.credibility.start} → {book.credibility.end}
-              </b>
-              <span>费用覆盖</span>
-              <b>{book.credibility.feeCoverage}</b>
-              <span>日线 MAE/MFE</span>
-              <b>
-                {pctPlain(book.credibility.maeMfeComputableShare, 0)} 可计算（粗估，同日不适用）
-              </b>
-              <span>追高窗口覆盖</span>
-              <b>{pctPlain(book.credibility.chaseCoverage, 0)}</b>
-              <span>排除行</span>
-              <b>{book.excludedRows.length} 条（非美/期权/基金等，未混进绩效）</b>
-              <span>R 口径异常</span>
-              <b>{p.atrR.flagged} 笔</b>
-              <span>路径异常（实现&gt;日线 MFE）</span>
-              <b>{p.captureAnomalies} 笔</b>
-              <span>对账差额</span>
-              <b>{money(p.reconDifference, 2)}</b>
-              <span>回撤口径</span>
-              <b className="tiny">
-                {accountOk ? '账户回撤（TWR/净值）' : sleeveOk ? '子账本金额回落' : '无路径'} · 蒙特卡洛用交易序列回撤
-              </b>
-              <span>口径版本</span>
-              <b>{book.credibility.metricVersion}</b>
-            </div>
-            <CoverageMeter label="MAE/MFE" value={book.credibility.maeMfeComputableShare} />
-            <CoverageMeter label="追高窗口" value={book.credibility.chaseCoverage} />
-          </article>
-          <article className="panel">
-            <h3>为什么有些结论不可信</h3>
-            <p className="tiny">{book.credibility.bannerText}</p>
-            <p className="tiny">{book.credibility.bannerDetail}</p>
-            <p className="tiny">{book.credibility.minSampleNote}</p>
-            <ul className="tiny">
-              {book.credibility.notes.map((n) => (
-                <li key={n}>{n}</li>
-              ))}
-            </ul>
-            <div className="kv-grid">
-              <span>分析样本区间</span>
-              <b className="tiny">{book.credibility.analysisWindow}</b>
-              <span>样本外验证</span>
-              <b className="tiny">{book.credibility.oosWindow}</b>
-              <span>模型训练</span>
-              <b className="tiny">{book.credibility.modelTraining}</b>
-            </div>
-            <p className="tiny">置信区间仍显示在前几层对应指标旁。这里不堆 p 值，也不运行预测模型。</p>
-          </article>
-
-          <article className="panel wide">
-            <h3>蒙特卡洛：有放回抽样看运气</h3>
-            {book.analytics.monteCarlo ? (
-              (() => {
-                const mc = book.analytics.monteCarlo!
-                const pctile = Math.round(mc.terminalPctile * 100)
-                const lose = Math.round((mc.terminals.filter((v) => v <= 0).length / mc.terminals.length) * 100)
-                const ddPct = Math.round(mc.maxDDPctile * 100)
-                const verdict =
-                  pctile >= 70
-                    ? `偏走运 —— 有放回抽样里，约 ${pctile}% 的终值不如你这次。这次抽到的交易组合偏好运，别全记在方法上。`
-                    : pctile <= 30
-                      ? `偏背运 —— 约 ${100 - pctile}% 的抽样终值比你这次好。方法未必这么糟。`
-                      : `运气大致中性 —— 你的终值排在抽样结果中间（约第 ${pctile} 名 / 100）。`
-                return (
-                  <>
-                    <p className="muted">
-                      从历史开仓日里<strong>有放回</strong>抽取，凑满 {mc.nTrades} 笔，重复 {mc.rounds} 次。同一笔大赢可能被抽到多次，所以最终盈亏会变。
-                      若只打乱这 {mc.nTrades} 笔的顺序，总盈亏不变，只会改回撤路径。这里的回撤是交易序列回撤（累计已实现的高峰回落），不是账户净值回撤。
-                    </p>
-                    <p className="verdict">{verdict}</p>
-                    <h4 className="tiny" style={{ margin: '12px 0 4px' }}>抽样终值（可变，因为有放回）</h4>
-                    <Histogram
-                      values={mc.terminals}
-                      bins={29}
-                      format={moneyK}
-                      markerValue={mc.realizedTerminal}
-                      markerLabel="你在这里"
-                    />
-                    <h4 className="tiny" style={{ margin: '16px 0 4px' }}>交易序列最大回撤（路径风险）</h4>
-                    <Histogram
-                      values={mc.maxDDs.map((v) => -v)}
-                      bins={21}
-                      format={moneyK}
-                      markerValue={-mc.realizedMaxDD}
-                      markerLabel="你的序列回撤"
-                    />
-                    <p className="tiny">{mc.note}</p>
-                    <ul className="tiny plain-facts">
-                      <li>
-                        <b>{lose}%</b> 的抽样最终是亏钱的。{lose >= 55 ? '这套交易本身就偏亏,不只是路径运气。' : ''}
-                      </li>
-                      <li>
-                        你实际的交易序列最大回撤 <b>{moneyAbs(mc.realizedMaxDD)}</b>,比约 {ddPct}% 的抽样更深
-                        {ddPct >= 60 ? '（算偏难受的一档）' : ''}。
-                      </li>
-                      {mc.ddProb.slice(1).map((d, i) => (
-                        <li key={i}>
-                          还有约 <b>{Math.round(d.prob * 100)}%</b> 的可能,序列回撤会比 {moneyAbs(d.dd)} 更深。
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )
-              })()
-            ) : (
-              <p className="tiny">闭环不足 30 笔或开仓日过少,不跑蒙特卡洛。</p>
-            )}
-          </article>
-
-          <article className="panel">
-            <h3>单笔盈亏分布</h3>
-            <p className="muted">箱=中间一半的交易,竖线=中位,点=每一笔;极端单笔钉在两端做角标,不拉伸主体。</p>
-            {(() => {
-              const closed = book.episodes.filter((t) => t.status === 'closed')
-              if (closed.length < 4) return <p className="tiny">样本太少,不画分布。</p>
-              const s = p.tradeShape
-              const shape =
-                s.skew != null && s.skew > 0.5
-                  ? '你的盈亏是「多数小额 + 少数大赢」的形状'
-                  : s.skew != null && s.skew < -0.5
-                    ? '你的盈亏是「多数小赢 + 偶发巨亏」的形状'
-                    : '你的盈亏大致对称'
-              const fat = s.kurtosis != null && s.kurtosis > 3 ? ',尾部偏肥 —— 极端单笔比常态更常出现' : ''
-              return (
-                <>
-                  <p className="verdict">
-                    {shape}
-                    {fat}。最惨的 5% 交易,平均每笔亏 {s.cvar95 == null ? '—' : moneyAbs(s.cvar95)}。
-                  </p>
-                  <BoxStrip values={closed.map((t) => t.realizedPnl)} format={moneyK} />
-                  <p className="tiny">
-                    红点=亏损单、绿点=盈利单。偏度 {s.skew?.toFixed(1) ?? '—'} · 超额峰度 {s.kurtosis?.toFixed(1) ?? '—'} · 最差 5%
-                    门槛 {s.var95 == null ? '—' : money(s.var95)}。
-                  </p>
-                  <p className="tiny">{book.analytics.runs.note}</p>
-                </>
-              )
-            })()}
-          </article>
-
-          <article className="panel">
-            <h3>敏感性:结果稳不稳</h3>
-            <p className="muted">{book.sensitivity.note}</p>
-            {(() => {
-              const sv = book.sensitivity
-              const conc = sv.top1Share
-              const dropWin = sv.expectancyDropMaxWin
-              const concVerdict =
-                conc != null && conc >= 0.5
-                  ? `高度依赖极少数交易:毛利的 ${pctPlain(conc, 0)} 来自最大一笔。去掉它,历史单笔均值就从 ${money(sv.meanPnl ?? 0)} 掉到 ${dropWin == null ? '—' : money(dropWin)} —— 这更像被一两单撑起来,不是稳定的 edge。`
-                  : conc != null
-                    ? `盈利没有过度集中:最大一笔占毛利 ${pctPlain(conc, 0)},拿掉后单笔均值 ${dropWin == null ? '—' : money(dropWin)}。`
-                    : '没有毛利样本,不评估集中度。'
-              const c0 = sv.cost.find((c) => c.bps === 0)?.expectancy
-              const cHi = [...sv.cost].reverse().find((c) => c.expectancy != null)
-              const costText =
-                c0 != null && cHi && cHi.expectancy != null
-                  ? `把成本从 0 加到 ${cHi.bps}bp,单笔均值 ${money(c0)} → ${money(cHi.expectancy)},几乎不动 —— 结果对成本不敏感。`
-                  : null
-              const h1 = sv.firstHalfExpectancy
-              const h2 = sv.secondHalfExpectancy
-              return (
-                <>
-                  <p className="verdict">{concVerdict}</p>
-                  {conc != null ? (
-                    <div style={{ marginTop: 4 }}>
-                      <CoverageMeter label="最大一笔占毛利" value={conc} />
-                      {sv.top3Share != null ? <CoverageMeter label="前 3 笔" value={sv.top3Share} /> : null}
-                      {sv.top5Share != null ? <CoverageMeter label="前 5 笔" value={sv.top5Share} /> : null}
-                    </div>
-                  ) : null}
-                  {h1 != null && h2 != null ? (
-                    <p className="tiny">
-                      分两半看:前半 {money(h1)} → 后半 {money(h2)}({h2 > h1 ? '在变好' : h2 < h1 ? '在变差' : '基本持平'})。
-                    </p>
-                  ) : null}
-                  {costText ? <p className="tiny">{costText}</p> : null}
-                </>
-              )
-            })()}
-            <details className="fold-block">
-              <summary>更多细节</summary>
-            <div className="kv-grid">
-              <span>去掉最大盈利单后的历史单笔均值</span>
-              <b>{book.sensitivity.expectancyDropMaxWin == null ? '—' : money(book.sensitivity.expectancyDropMaxWin)}</b>
-              <span>去掉最大单日后的历史单笔均值</span>
-              <b>{book.sensitivity.expectancyDropMaxDay == null ? '—' : money(book.sensitivity.expectancyDropMaxDay)}</b>
-              <span>最大盈利单占总毛利</span>
-              <b>{book.sensitivity.maxWinShareGrossProfit == null ? '—' : pctPlain(book.sensitivity.maxWinShareGrossProfit, 0)}</b>
-              <span>最大亏损单占总毛亏</span>
-              <b>{book.sensitivity.maxLossShareGrossLoss == null ? '—' : pctPlain(book.sensitivity.maxLossShareGrossLoss, 0)}</b>
-              <span>最大单笔绝对盈亏占总绝对盈亏</span>
-              <b>{book.sensitivity.maxAbsShareTotalAbs == null ? '—' : pctPlain(book.sensitivity.maxAbsShareTotalAbs, 0)}</b>
-              <span>前 1 / 3 / 5 笔盈利占总毛利</span>
-              <b>
-                {[book.sensitivity.top1Share, book.sensitivity.top3Share, book.sensitivity.top5Share]
-                  .map((v) => (v == null ? '—' : pctPlain(v, 0)))
-                  .join(' / ')}
-              </b>
-              <span>均值 / 中位 / 截尾均值</span>
-              <b>
-                {[book.sensitivity.meanPnl, book.sensitivity.medianPnl, book.sensitivity.trimmedMean]
-                  .map((v) => (v == null ? '—' : money(v)))
-                  .join(' / ')}
-              </b>
-              <span>前半 / 后半历史单笔均值</span>
-              <b>
-                {book.sensitivity.firstHalfExpectancy == null ? '—' : money(book.sensitivity.firstHalfExpectancy)}
-                {' / '}
-                {book.sensitivity.secondHalfExpectancy == null ? '—' : money(book.sensitivity.secondHalfExpectancy)}
-              </b>
-              <span>FIFO vs 持仓片段</span>
-              <b>
-                {book.sensitivity.fifoVsEpisode.fifoN} / {book.sensitivity.fifoVsEpisode.episodeN} 笔 · 历史单笔均值{' '}
-                {book.sensitivity.fifoVsEpisode.fifoExp == null ? '—' : money(book.sensitivity.fifoVsEpisode.fifoExp)}
-                {' vs '}
-                {book.sensitivity.fifoVsEpisode.episodeExp == null ? '—' : money(book.sensitivity.fifoVsEpisode.episodeExp)}
-              </b>
-            </div>
-            <table className="grid trips">
-              <thead>
-                <tr>
-                  <th>额外成本</th>
-                  <th>历史单笔均值</th>
-                  <th>PF</th>
-                </tr>
-              </thead>
-              <tbody>
-                {book.sensitivity.cost.map((row) => (
-                  <tr key={row.bps}>
-                    <td>{row.bps} bps</td>
-                    <td>{row.expectancy == null ? '—' : money(row.expectancy)}</td>
-                    <td>{row.pf == null ? 'N/A' : finiteNum(row.pf)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </details>
-          </article>
-        </div>
-      ) : null}
+      <div className={`tab-panel ${tab === 'how' ? 'on' : ''}`}>
+        <HowPage
+          cover={cover}
+          space={space}
+          diagnoses={diagnoses}
+          claimedIds={claimedIds}
+          active={experimentRows.filter((e) => e.status === 'active')}
+          archived={experimentRows.filter((e) => e.status === 'archived')}
+          onClaim={claimDiagnosis}
+          onChange={() => setExpTick((n) => n + 1)}
+          onOpenHealth={() => setShowHealth(true)}
+          onFillAccount={openAccountSupplement}
+          accountLimited={!accountOk}
+        />
+      </div>
 
       {selected ? <PathDrawer trip={selected} bars={book.bars[selected.symbol]} onClose={closeTrip} /> : null}
       {!selected && insight ? (
@@ -2715,6 +2224,17 @@ export function Dashboard(props: {
           onGo={(nextTab) => {
             go(nextTab)
             setInsight(null)
+          }}
+        />
+      ) : null}
+      {!selected && showHealth ? (
+        <HealthDrawer
+          book={book}
+          health={health}
+          onClose={() => setShowHealth(false)}
+          onAccount={() => {
+            setShowHealth(false)
+            openAccountSupplement()
           }}
         />
       ) : null}
