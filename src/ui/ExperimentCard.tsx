@@ -151,14 +151,42 @@ export function ExperimentCard(props: {
       <h3>{DAY4_SHADOW_TITLE}</h3>
       {row.status === 'archived' && row.closeReason ? <p className="tiny">已取消：{row.closeReason}</p> : null}
 
+      {row.eligibility ? (
+        <details className="fold-block exp-elig">
+          <summary>入组条件（事先记录，第 4 日据此判断，不事后解释）</summary>
+          <dl className="exp-elig-dl">
+            <div>
+              <dt>交易类型</dt>
+              <dd>{row.eligibility.tradeType}</dd>
+            </div>
+            <div>
+              <dt>计划持有周期</dt>
+              <dd>{row.eligibility.planHold}</dd>
+            </div>
+            <div>
+              <dt>入场逻辑</dt>
+              <dd>{row.eligibility.entryLogic}</dd>
+            </div>
+            <div>
+              <dt>明确失效条件</dt>
+              <dd>{row.eligibility.invalidation}</dd>
+            </div>
+            <div>
+              <dt>允许延长的例外</dt>
+              <dd>{row.eligibility.extendException}</dd>
+            </div>
+          </dl>
+        </details>
+      ) : null}
+
       {row.status === 'active' ? (
         <>
           <p className="tiny">
             状态：{shadowN === 0 ? '等待首笔符合条件的交易' : `已有 ${shadowN} 笔有效配对`}
           </p>
+          {ev && shadowN > 0 ? <PairSummary ev={ev} /> : null}
           <SampleDots n={shadowN} target={targetN} />
           <SampleFunnel {...funnelOf(ev)} />
-          {ev && shadowN > 0 ? <PairSummary ev={ev} /> : null}
           {ev?.pairs?.length ? <PairDumbbells pairs={ev.pairs} onPick={props.onOpenTrip} /> : null}
           {ev?.pairs ? <CumImprove pairs={ev.pairs} /> : null}
         </>

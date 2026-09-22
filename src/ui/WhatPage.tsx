@@ -1,9 +1,10 @@
-import type { ReactNode } from 'react'
+import { useRef, type ReactNode } from 'react'
 import { money, moneyAbs, pct } from '../lib/format.ts'
 import type { CoverGap, CoverReport } from '../engine/cover.ts'
 import { formatBe, waterfallOf } from '../engine/cover.ts'
 import type { Book, RoundTrip } from '../types.ts'
 import { BoxStrip, ForestPlot, TimePnlBars, WaterfallFlow } from './charts.tsx'
+import { PageToc, type TocItem } from './tocNav.tsx'
 
 export function CapabilityMatrix(props: {
   gaps: CoverGap[]
@@ -64,6 +65,7 @@ export function WhatPage(props: {
   const { book, cover } = props
   const p = book.performance
   const dd = p.maxDrawdownUsd ? money(-Math.abs(p.maxDrawdownUsd)) : p.maxDrawdown != null ? pct(p.maxDrawdown) : '—'
+  const basisLabel = p.pathKind === 'account' ? '账户盯市盈亏' : '正股盯市盈亏'
   const wf = waterfallOf(book)
   const wins = props.trips.filter((t) => t.realizedPnl > 0).length
   const losses = props.trips.filter((t) => t.realizedPnl <= 0).length
@@ -81,9 +83,20 @@ export function WhatPage(props: {
   }
   const iqr = qAt(0.75) - qAt(0.25)
   const bound = Math.max(Math.abs(qAt(0.25) - 1.5 * iqr), Math.abs(qAt(0.75) + 1.5 * iqr), 1)
+  const mainRef = useRef<HTMLDivElement>(null)
+  const whatToc: TocItem[] = [
+    { id: 'cover', label: '结论' },
+    { id: 'path', label: '路径与回撤' },
+    { id: 'trade-bars', label: '逐笔 · 按时间' },
+    { id: 'pnl-swarm', label: '逐笔 · 按金额' },
+    { id: 'forest', label: '单笔期望' },
+    { id: 'health', label: '可信吗' },
+  ]
   return (
-    <div className="what-page print-section" id="cover">
-      <section className="cover-verdict">
+    <div className="analysis-page">
+      <PageToc items={whatToc} ariaLabel="是什么目录" mainRef={mainRef} />
+      <div className="analysis-main what-page print-section" ref={mainRef}>
+      <section className="cover-verdict" id="cover">
         <p className="cover-scan">
           <span>
             {`回撤 ${dd}`}
@@ -94,6 +107,7 @@ export function WhatPage(props: {
             亏在哪、是不是运气 → 为什么
           </button>
         </p>
+        <p className="cover-basis">{basisLabel} · 未平仓按最新价</p>
         <p className={`cover-net ${p.netPnl >= 0 ? 'up' : 'down'}`}>{money(p.netPnl)}</p>
         <h2>{cover.verdict}</h2>
       </section>
@@ -237,6 +251,7 @@ export function WhatPage(props: {
           亏在哪、是不是运气 → 为什么
         </button>
       </p>
+      </div>
     </div>
   )
 }

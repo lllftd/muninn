@@ -95,6 +95,7 @@ function Drop(props: {
 export function Landing(props: {
   busy: boolean
   stage?: string | null
+  progress?: number | null
   error: string | null
   onSample: () => void
   onSubmit: (args: {
@@ -178,6 +179,13 @@ export function Landing(props: {
             {props.busy ? props.stage || '正在分析…' : '查看样本账本'}
           </button>
         </div>
+        {props.busy && props.progress != null ? (
+          <div className="load-progress" aria-hidden>
+            <b>
+              <i style={{ width: `${Math.round(props.progress * 100)}%` }} />
+            </b>
+          </div>
+        ) : null}
         <p className="hero-note">仅在浏览器本地处理 · 成交记录必填 · 富途 / IB / 老虎均可 · 订单历史可选</p>
         <input
           ref={fillPick}

@@ -88,13 +88,15 @@ export function givebackPoints(trips: RoundTrip[]) {
       const mfe = t.mfeDollar as number
       const dollar = mfe - t.realizedPnl
       const rate = Math.min(1, Math.max(0, dollar / mfe))
+      const cat: 'partial' | 'full' | 'loss' = t.realizedPnl < 0 ? 'loss' : rate >= 0.97 ? 'full' : 'partial'
       return {
         id: t.id,
         x: mfe,
         y: rate,
         dollar,
         up: t.realizedPnl >= 0,
-        label: `${t.symbol} · 回吐 ${(rate * 100).toFixed(0)}% · MFE ${Math.round(mfe)}`,
+        cat,
+        label: `${t.symbol} · ${cat === 'loss' ? '回吐后转亏' : cat === 'full' ? '全部回吐' : '部分回吐'} · ${t.realizedPnl >= 0 ? '+' : '-'}$${Math.abs(Math.round(t.realizedPnl))} · MFE ${Math.round(mfe)}`,
       }
     })
 }
@@ -120,7 +122,8 @@ export function jitterRate(id: string, y: number) {
   let h = 0
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0
   const unit = ((Math.abs(h) % 19) - 9) / 9
-  return Math.min(1.035, Math.max(0.905, y + unit * 0.04))
+  // 纵向限制在 97%～99%，绝不让点越过 100% 的真实边界。
+  return Math.min(0.99, Math.max(0.97, y + unit * 0.02))
 }
 
 export type LadderStep = {
@@ -206,5 +209,23 @@ export function funnelOf(ev: ExperimentEvaluation | undefined): ShadowFunnel {
     priced: ev?.funnel?.priced ?? 0,
     closed: ev?.newN ?? 0,
     paired: ev?.shadowN ?? 0,
+  }
+}
+
+export function experimentResult(ev: ExperimentEvaluation) {
+  const pairs = ev.pairs ?? []
+  const diffs = pairs.map((p) => p.shadow - p.actual)
+  const better = diffs.filter((d) => d > 0).length
+  const worse = diffs.filter((d) => d < 0).length
+  const neutral = diffs.length - better - worse
+  return {
+    n: diffs.length,
+    better,
+    worse,
+    neutral,
+    medianDelta: diffs.length ? median(diffs) : null,
+    total: diffs.reduce((s, d) => s + d, 0),
+    maxHarm: diffs.length ? Math.min(...diffs) : null,
+    maxGain: diffs.length ? Math.max(...diffs) : null,
   }
 }

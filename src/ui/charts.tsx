@@ -1057,7 +1057,7 @@ export function ForestPlot(props: {
               {hasVal ? <i className="forest-dot" style={{ left: xPct(item.value!)} } /> : null}
             </div>
             <span className="forest-amt">
-              {hasVal ? fmt(item.value!) : item.n === 0 ? '无样本' : item.n != null && item.n < 5 ? `${item.n}笔·不画须` : '—'}
+              {hasVal ? fmt(item.value!) : item.n === 0 ? '无样本' : item.n != null && item.n < 5 ? `${item.n}笔·样本太少，不显示区间` : '—'}
               {item.n != null && hasVal ? <i className="bar-n">n={item.n}</i> : null}
               {cross ? (
                 <i className="forest-badge" title="须穿过 0，还锁不住正负">
@@ -2224,6 +2224,8 @@ export function Waterfall(props: {
   format?: (v: number) => string
   height?: number
   onPick?: (id: string) => void
+  /** 普通柱状图：每根都从 0 画起，不做瀑布浮动柱与连线。 */
+  flat?: boolean
 }) {
   if (!props.steps.length) return null
   const fmt = props.format ?? money
@@ -2234,7 +2236,7 @@ export function Waterfall(props: {
   const innerH = h - pad.t - pad.b
   let run = 0
   const rows = props.steps.map((s) => {
-    if (s.total) return { ...s, from: 0, to: s.delta }
+    if (props.flat || s.total) return { ...s, from: 0, to: s.delta }
     const from = run
     run += s.delta
     return { ...s, from, to: run }
@@ -2292,7 +2294,7 @@ export function Waterfall(props: {
               <title>{`${r.label} ${fmt(r.total ? r.to : r.delta)}`}</title>
             </rect>
           )
-          if (i > 0) {
+          if (i > 0 && !props.flat) {
             const prevX = pad.l + (i - 1) * gap + (gap - bw) / 2 + bw
             const connectorY = yPx(r.total ? (rows[i - 1].total ? rows[i - 1].to : rows[i - 1].to) : r.from)
             return (

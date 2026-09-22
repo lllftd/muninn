@@ -13,6 +13,7 @@ import {
 } from './columns.ts'
 import { csvHeaders, csvToObjects } from '../lib/csv.ts'
 import { num } from '../lib/format.ts'
+import { eventFingerprint, makeEventUid, sourceFileHash } from '../lib/instrument.ts'
 import { parseBrokerTime, parseIsoLike } from '../lib/time.ts'
 import type { BrokerOrder, Cashflow, Fill, ImportResult, Side, Warning } from '../types.ts'
 
@@ -98,6 +99,7 @@ function normMarket(row: Record<string, string>): string {
 
 export function parseFills(text: string): Fill[] {
   const objects = keepIbDiscriminator(csvToObjects(text).filter((row) => !isJunkFillRow(row)))
+  const sourceHash = sourceFileHash(text)
   return objects.flatMap((row, i) => {
     const rawQty = parseAmount(pickField(row, 'qty') || pick(row, ['Fill Qty', 'Quantity', 'Qty']))
     const price = parseAmount(pickField(row, 'price') || pick(row, ['Fill Price', 'Price', 'T. Price']))
@@ -117,6 +119,8 @@ export function parseFills(text: string): Fill[] {
     if (!Number.isFinite(time.getTime())) return []
     const symbol = cleanSymbol(pickField(row, 'symbol') || pick(row, ['Symbol']))
     if (!symbol) return []
+    const fees = pickFees(row)
+    const brokerExecutionId = pickField(row, 'executionId') || undefined
     return [
       {
         id: `f${i + 1}`,
@@ -130,8 +134,12 @@ export function parseFills(text: string): Fill[] {
         time,
         market: normMarket(row),
         currency: pickField(row, 'currency') || pick(row, ['Currency']) || 'USD',
-        fees: pickFees(row),
+        fees,
         kind: 'trade',
+        instrumentType: 'stock',
+        brokerExecutionId,
+        eventUid: makeEventUid({ sourceHash, rowIndex: i, brokerExecutionId }),
+        eventFingerprint: eventFingerprint({ timeMs: time.getTime(), symbol, side, qty, price, fees }),
       },
     ]
   })

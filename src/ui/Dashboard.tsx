@@ -17,13 +17,10 @@ import { ciText, clsPnl, coverageLabel, finiteNum, holdLabel, money, moneyAbs, m
 import { etDateKey, etParts } from '../lib/time.ts'
 import { getTagVerdict } from '../lib/tagVerdicts.ts'
 import { REGIME_BOUND_TEXT, REGIME_LABELS } from '../engine/regime.ts'
-import { diagnose, type Diagnosis } from '../engine/diagnose.ts'
-import { group } from '../engine/checkup.ts'
+import { diagnose } from '../engine/diagnose.ts'
 import { buildHealth } from '../engine/health.ts'
 import { buildCross } from '../engine/cross.ts'
 import { buildSpace } from '../engine/space.ts'
-import { withEvaluations } from '../engine/experiments.ts'
-import { loadExperiments, upsertExperiment } from '../lib/experiments.ts'
 import { loadProPrefs, saveProPrefs, type ProPrefs } from '../lib/proPrefs.ts'
 import type { Bar, Book, Checkup, CoverageRow, EquityPoint, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
 
@@ -78,6 +75,24 @@ function Hint(props: { term: string; def: string }) {
     </abbr>
   )
 }
+
+const GLOSSARY: Array<[string, string]> = [
+  ['盯市', '未平仓持仓按最新价估算的盈亏，会随价格波动，不等于已落袋。'],
+  ['已实现', '已平仓往返交易的实际盈亏。'],
+  ['TWR', '时间加权收益，剥离外部入出金影响后的账户复合增长。'],
+  ['XIRR', '资金加权内部收益率，通常年化表达，会被中途出入金改变。'],
+  ['MAE', '持仓期间按日线估算的最大不利浮亏（路径最低点相对开仓）。'],
+  ['MFE', '持仓期间按日线估算的最大有利浮盈（路径最高点相对开仓）。'],
+  ['ATR-R', '盈亏除以「开仓前 ATR × 数量」得到的风险单位，用于跨标的比较。'],
+  ['胜率', '盈利往返笔数 ÷ 已平仓往返总笔数。'],
+  ['期望', '每笔往返交易的平均盈亏。'],
+  ['PF / 盈亏比', '总盈利 ÷ 总亏损（Profit Factor）。'],
+  ['夏普 Sharpe', '单位波动风险所承担的超额收益。'],
+  ['Sortino', '只对下行波动惩罚的风险调整收益。'],
+  ['Calmar', '年化收益 ÷ 最大回撤。'],
+  ['Bootstrap', '对样本重复重抽样以估计置信区间，判断结论是否统计上站得住。'],
+  ['置信区间', '样本随机波动下结果的可能范围；区间跨零 = 正负方向还锁不住。'],
+]
 
 function VChip(props: { label: string; tone?: 'ok' | 'watch' | 'fail' | 'na'; onClick?: () => void }) {
   const cls = `vchip ${props.tone || 'na'}${props.onClick ? ' clickable' : ''}`
@@ -1046,6 +1061,7 @@ function writeView(tab: Tab, hash?: string) {
 export function Dashboard(props: {
   book: Book
   stage?: string | null
+  progress?: number | null
   updating?: boolean
   onReset: () => void
   onSample: () => void
@@ -1058,7 +1074,6 @@ export function Dashboard(props: {
   const [showAccountDrawer, setShowAccountDrawer] = useState(false)
   const [showHealth, setShowHealth] = useState(false)
   const [prefs, setPrefs] = useState<ProPrefs>(() => (typeof window === 'undefined' ? { minN: 15, minGroupN: 10, concentration: 0.4 } : loadProPrefs()))
-  const [expTick, setExpTick] = useState(0)
   const [focusAnchor, setFocusAnchor] = useState<string | null>(() => initialHash() || null)
   const [selected, setSelected] = useState<RoundTrip | null>(null)
   const [insight, setInsight] = useState<Insight | null>(null)
@@ -1153,17 +1168,9 @@ export function Dashboard(props: {
   const diagnoses = useMemo(() => diagnose(book, prefs), [book, prefs])
   const cross = useMemo(() => buildCross(book.episodes), [book.episodes])
   const space = useMemo(() => (filtered ? buildSpace(scoped, book.bars) : book.space), [filtered, scoped, book.space, book.bars])
-  const experimentRows = useMemo(() => {
-    const closedEps = book.episodes.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP'))
-    return withEvaluations(loadExperiments(book.accountName), closedEps, prefs, book.bars)
-  }, [book, prefs, expTick])
-  const claimedIds = useMemo(
-    () => experimentRows.filter((e) => e.status === 'active').map((e) => e.diagnosisId),
-    [experimentRows],
-  )
   const cover = useMemo(
-    () => buildCover(book, diagnoses, health, experimentRows),
-    [book, diagnoses, health, experimentRows],
+    () => buildCover(book, diagnoses, health),
+    [book, diagnoses, health],
   )
   const leadFacts = useMemo(() => whyLeadFacts(book), [book])
   const pickWhy = (next: { symbol?: string; tripId?: string }) => {
@@ -1196,25 +1203,6 @@ export function Dashboard(props: {
     [diagnoses, health, closedAll.length, book.checkup, showAllLenses, cross, book.analytics.monteCarlo],
   )
   const whyCh = (id: string) => whyChapters.find((c) => c.id === id)
-  const claimDiagnosis = (d: Diagnosis) => {
-    if (!d.canClaim || !d.experiment) return
-    const closedEps = book.episodes.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP'))
-    upsertExperiment({
-      id: `${d.id}-${Date.now()}`,
-      createdAt: new Date().toISOString(),
-      diagnosisId: d.id,
-      hypothesis: d.experiment.hypothesis,
-      constraint: d.experiment.constraint,
-      targetN: d.experiment.targetN,
-      baselineN: closedEps.length,
-      baselineExpectancy: d.experiment.constraint.kind === 'shadow-hold' ? 0 : p.expectancy.value,
-      claimedTripIds: closedEps.map((t) => t.id),
-      accountKey: book.accountName.trim() || 'default',
-      status: 'active',
-    })
-    setExpTick((n) => n + 1)
-    go('how')
-  }
   const exportTrips = () => {
     const rows = book.episodes.filter((t) => t.status === 'closed' && !t.tags.includes('DRIP'))
     download(`muninn-trips-${book.accountName || 'book'}.csv`, tripsCsv(rows))
@@ -1285,7 +1273,18 @@ export function Dashboard(props: {
 
   return (
     <div className={`dash ${drawerOpen ? 'with-drawer' : ''} ${props.updating ? 'is-updating' : ''}`}>
-      {props.updating ? <div className="recalc-veil">正在更新 · {props.stage}</div> : null}
+      {props.updating ? (
+        <div className="recalc-veil">
+          正在更新 · {props.stage}
+          {props.progress != null ? (
+            <div className="load-progress" aria-hidden>
+              <b>
+                <i style={{ width: `${Math.round(props.progress * 100)}%` }} />
+              </b>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {book.isSample ? (
         <div className="sample-bar">
@@ -1337,6 +1336,17 @@ export function Dashboard(props: {
           <li>数据新鲜度：{book.isSample ? '示例账本内置成交' : '本机刚才这次分析'}。成交仍留在本机。</li>
           {book.warnings.map((w) => (
             <li key={w.code + w.message}>{w.message}</li>
+          ))}
+        </ul>
+      </details>
+
+      <details className="warn glossary">
+        <summary>术语表（{GLOSSARY.length}）</summary>
+        <ul>
+          {GLOSSARY.map(([term, def]) => (
+            <li key={term}>
+              <b>{term}</b>：{def}
+            </li>
           ))}
         </ul>
       </details>
@@ -2376,27 +2386,7 @@ export function Dashboard(props: {
       </div>
 
       <div className={`tab-panel ${tab === 'how' ? 'on' : ''}`}>
-        <HowPage
-          cover={cover}
-          space={space}
-          diagnoses={diagnoses}
-          trips={closedAll}
-          claimedIds={claimedIds}
-          active={experimentRows.filter((e) => e.status === 'active')}
-          archived={experimentRows.filter((e) => e.status === 'archived')}
-          onClaim={claimDiagnosis}
-          onChange={() => setExpTick((n) => n + 1)}
-          onOpenHealth={() => setShowHealth(true)}
-          onFillAccount={openAccountSupplement}
-          onOpenTrip={(id) => {
-            const t = book.episodes.find((x) => x.id === id)
-            if (t) openTrip(t)
-          }}
-          onOpenTrips={(id, label, list) =>
-            openInsight({ kind: 'group', row: group(id, label, list, list.length), trips: list })
-          }
-          accountLimited={!accountOk}
-        />
+        <HowPage space={space} book={book} health={health} onGoWhy={() => go('why', 'hold')} />
       </div>
 
       {selected ? <PathDrawer trip={selected} bars={book.bars[selected.symbol]} onClose={closeTrip} /> : null}

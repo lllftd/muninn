@@ -97,12 +97,13 @@ describe('evidenceLadder', () => {
 })
 
 describe('jitterRate', () => {
-  it('nudges stacked 100% rates but keeps them near the ceiling', () => {
+  it('keeps stacked 100% rates below the true ceiling and leaves low rates untouched', () => {
     const a = jitterRate('aaa', 1)
     const b = jitterRate('bbb', 1)
-    expect(a).not.toBe(b)
-    expect(a).toBeGreaterThan(0.9)
-    expect(a).toBeLessThanOrEqual(1.035)
+    expect(a).toBeLessThanOrEqual(0.99)
+    expect(b).toBeLessThanOrEqual(0.99)
+    expect(a).toBeGreaterThanOrEqual(0.97)
+    expect(b).toBeGreaterThanOrEqual(0.97)
     expect(jitterRate('mid', 0.5)).toBe(0.5)
   })
 })

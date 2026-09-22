@@ -11,16 +11,17 @@ export function WhyLead(props: { text: string; facts: WhyLeadFacts; coverage: st
     <section className="why-lead" id="why-lead">
       <p className="why-lead-k">这一期为什么</p>
       <p className="why-lead-body">{props.text}</p>
+      <p className="tiny muted">本页为已实现口径（已平仓往返），与「是什么」页头部的盯市口径不同。</p>
       <div className="why-lead-grid">
         <div>
           <p className="why-lead-k">结果</p>
           <ul>
             <li>
-              净盈亏 <b className={f.net > 0 ? 'up' : f.net < 0 ? 'down' : ''}>{money(f.net)}</b>
+              已实现净盈亏 <b className={f.net > 0 ? 'up' : f.net < 0 ? 'down' : ''}>{money(f.net)}</b>
             </li>
             <li>交易笔数 {f.n}</li>
             <li>胜率 {f.wr == null ? '—' : pctPlain(f.wr, 0)}</li>
-            <li>本期交易序列最大回撤 {f.seqDdUsd == null ? '—' : `−${moneyAbs(f.seqDdUsd)}`}</li>
+            <li>已实现交易序列最大回撤 {f.seqDdUsd == null ? '—' : `−${moneyAbs(f.seqDdUsd)}`}</li>
             <li>盈亏比 {f.payoff == null ? '—' : f.payoff.toFixed(2)}</li>
           </ul>
         </div>

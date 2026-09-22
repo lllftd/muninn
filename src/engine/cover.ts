@@ -2,7 +2,7 @@ import { money, pct, pctPlain } from '../lib/format.ts'
 import type { Diagnosis } from './diagnose.ts'
 import type { HealthReport } from './health.ts'
 import type { Book } from '../types.ts'
-import { isDay4Shadow, isMisalignedHoldExperiment, type ExperimentRecord } from '../lib/experiments.ts'
+import { evaluateActions } from './counterfactual.ts'
 
 export type CoverGap = {
   id: string
@@ -30,7 +30,7 @@ export type CoverReport = {
   benchChip: string | null
   improve: ImproveItem[]
   queue: HowQueueRow[]
-  howLead: string
+  howLead: { problem: string; action: string; limit: string }
   mainAction: Diagnosis | null
   /** 「为什么」首屏总答：2–4 句现有事实，不写死标的。 */
   whyLead: string
@@ -62,6 +62,22 @@ export type HowQueueRow = {
   next: string
   diagnosisId?: string
   canClaim: boolean
+  /** 候选卡片结构化字段：哪里做得不好 */
+  problem?: string
+  /** 发生范围（影响多少笔、集中度） */
+  scope?: string
+  /** 如何优化 */
+  action?: string
+  /** 不适用 / 排除范围 */
+  excludes?: string
+  /** 潜在副作用 */
+  risk?: string
+  /** 当前结论（观察阶段用，区别于「如何优化」） */
+  conclusion?: string
+  /** 证据阶段标签，如「仅作诊断 / 当前证据不足 / 历史回放未通过 / 已否决」 */
+  stage?: string
+  /** 前 5 笔贡献比例 (0..1)。null 表示无法计算或不足 5 笔。 */
+  concentrationShare?: number | null
 }
 
 function nLineOf(n: number) {
@@ -140,7 +156,7 @@ function whyTabSummary(items: Diagnosis[], luckShort: string): string {
   ]
   const cand = candFlags.filter(Boolean).length
   const luckBit = luckShort === '偏路径' ? '路径偏幸运' : luckShort === '运气未判' ? '运气未判' : '路径运气中性'
-  return `${behavior} 项主要行为问题 · ${cand} 项候选观察 · ${luckBit}`
+  return `${behavior} 项行为问题 · ${cand} 项分组差异 · ${luckBit}`
 }
 
 function luckLine(book: Book): { long: string; short: string } {
@@ -297,14 +313,45 @@ function queueRank(row: HowQueueRow): number {
   return impact * evidence * exec
 }
 
-function howQueue(book: Book, items: Diagnosis[], experiments: ExperimentRecord[]): HowQueueRow[] {
+function holdLossConcentration(book: Book, minDays: number): number | null {
+  const losses = book.episodes
+    .filter(
+      (t) =>
+        t.status === 'closed' &&
+        !t.tags.includes('DRIP') &&
+        t.holdMinutes >= minDays * 1440 &&
+        t.realizedPnl < 0,
+    )
+    .sort((a, b) => a.realizedPnl - b.realizedPnl)
+  const total = losses.reduce((s, t) => s + t.realizedPnl, 0)
+  if (total >= 0 || !losses.length) return null
+  const top5 = losses.slice(0, 5).reduce((s, t) => s + t.realizedPnl, 0)
+  return top5 / total
+}
+
+function givebackTopShare(book: Book): number | null {
+  const rows = book.episodes
+    .filter(
+      (t) =>
+        t.status === 'closed' &&
+        !t.tags.includes('DRIP') &&
+        t.pathQuality === 'daily_estimate' &&
+        !t.pathAnomaly &&
+        !t.splitSuspect &&
+        (t.mfeDollar ?? 0) > 0,
+    )
+    .map((t) => ({ dollar: Math.max(0, (t.mfeDollar as number) - t.realizedPnl) }))
+    .sort((a, b) => b.dollar - a.dollar)
+  const total = rows.reduce((s, r) => s + r.dollar, 0)
+  const top5 = rows.slice(0, 5).reduce((s, r) => s + r.dollar, 0)
+  return total > 0 ? top5 / total : null
+}
+
+function howQueue(book: Book, items: Diagnosis[]): HowQueueRow[] {
   const out: HowQueueRow[] = []
   const gb = book.space.giveback
   const mae = book.credibility.maeMfeComputableShare
-  const active = experiments.filter((e) => e.status === 'active')
   const holdDx = items.find((d) => d.id.startsWith('time-hold-'))
-  const holdRunning = active.some((e) => isDay4Shadow(e.constraint))
-  const holdMisaligned = active.some((e) => isMisalignedHoldExperiment(e.constraint))
   const holdH3 = book.checkup.holdBuckets.find((r) => r.id === 'h3')
   const holdH1 = book.checkup.holdBuckets.find((r) => r.id === 'h1')
   const holdRest = book.checkup.holdBuckets.filter((r) => r.id !== 'h1')
@@ -315,6 +362,7 @@ function howQueue(book: Book, items: Diagnosis[], experiments: ExperimentRecord[
   const replayBest = book.space.ruleReplay.bestPreset
   const bh = book.space.oppCost.symbolBh
   const spy = book.space.oppCost.spy
+  const gbTopShare = givebackTopShare(book)
 
   if (gb.nPath > 0 && gb.nFloated >= 5 && gb.sumDollar != null) {
     const partial = mae < 0.7 || gb.nPath < gb.nClosed
@@ -330,6 +378,14 @@ function howQueue(book: Book, items: Diagnosis[], experiments: ExperimentRecord[
       next: partial ? '补齐日线路径后再做规则回放。不是可实现收益。' : '看规则回放，不要按最高点兑现。',
       diagnosisId: items.find((x) => x.id === 'space-giveback')?.id,
       canClaim: false,
+      problem: '部分交易从最大浮盈大幅回吐，最终转亏或利润明显缩水。',
+      scope: `${gb.nFloated} 笔有浮盈路径可分析；回吐损失高度集中，不代表普遍问题。`,
+      conclusion: '暂未形成可直接执行的退出调整。',
+      action: '分别回放移动止盈、持有时限和预设退出规则，比较净改善与盈利截断。',
+      excludes: '最大浮盈（MFE）是事后才知道的，不能当作实时退出条件。',
+      risk: '过早止盈可能截断原本能走得更远的趋势交易。',
+      stage: '仅作诊断',
+      concentrationShare: gbTopShare,
     })
   }
 
@@ -338,21 +394,24 @@ function howQueue(book: Book, items: Diagnosis[], experiments: ExperimentRecord[
     const cap = money(-holdH3.pnl)
     out.push({
       id: 'hold-h3',
-      title: '第 4 个交易日收盘退出（影子）',
+      title: '长持仓（≥5 日）亏损',
       kind: 'historical',
-      status: holdRunning ? 'running' : 'pending',
+      status: 'pending',
       historical: holdH3.pnl,
       recoverable: null,
       recoverableKind: 'mechanical',
-      capLines: [`完全避开该组：${cap}`, '第 4 日退出可改善金额：未知，等待影子实验'],
-      finding: `${holdH3.label} ${holdH3.n} 笔历史合计 ${money(holdH3.pnl)}。完全避开该组的样本内机械上限是 ${cap}。「第 4 日收盘退出」不等于完全不做这些交易，不能把 ${cap} 当成可实现改善。`,
-      next: holdRunning
-        ? '继续第 4 个交易日收盘影子实验。'
-        : holdMisaligned
-          ? '右侧把当前实验修正为第 4 个交易日收盘退出。'
-          : '认领第 4 个交易日收盘影子实验，不改变真实退出。',
+      capLines: [`完全避开该组：${cap}`, '这是样本内机械上限，不是可实现改善'],
+      finding: `${holdH3.label} ${holdH3.n} 笔历史合计 ${money(holdH3.pnl)}。完全避开该组的样本内机械上限是 ${cap}，不等于可实现的改善。`,
+      next: '作为诊断，不建议据此对持仓天数做统一干预。',
       diagnosisId: d?.id,
-      canClaim: Boolean(d?.canClaim) && !holdRunning && !holdMisaligned,
+      canClaim: false,
+      problem: '部分长持仓交易最终亏损扩大。',
+      scope: `影响 ${holdH3.n} 笔持仓 ≥5 日；主要损失集中在少数几笔。`,
+      action: '优先约束单笔亏损规模与建仓风险。',
+      excludes: '中长线仓位、事件交易、已有明确延长持有理由的交易。',
+      risk: '对持仓天数做统一干预可能截断仍在恢复的交易。',
+      stage: '当前证据不足',
+      concentrationShare: holdLossConcentration(book, 5),
     })
   }
 
@@ -370,6 +429,11 @@ function howQueue(book: Book, items: Diagnosis[], experiments: ExperimentRecord[
     next: stopBest ? '可认领该档规则实验。' : '保留现有方式。',
     diagnosisId: items.find((x) => x.id === 'space-stop')?.id,
     canClaim: Boolean(items.find((x) => x.id === 'space-stop')?.canClaim),
+    problem: '部分亏损交易回撤幅度可能过大，缺少机械止损保护。',
+    action: stopBest ? `验证 ${pctPlain(stopBest.pct, 0)} 档硬止损。` : '验证 2%～20% 预设硬止损。',
+    excludes: '日线无法判断盘中先后；止损触发点可能与实际成交价存在偏差。',
+    risk: '过紧的止损可能把正常波动震出。',
+    stage: stopBest ? '已验证' : '历史回放未通过',
   })
 
   const ruleN = book.space.ruleReplay.rules.filter((r) => r.computable).length
@@ -387,6 +451,11 @@ function howQueue(book: Book, items: Diagnosis[], experiments: ExperimentRecord[
     next: replayBest ? '可认领该规则实验。' : '暂不采用。',
     diagnosisId: items.find((x) => x.id === 'space-replay')?.id,
     canClaim: Boolean(items.find((x) => x.id === 'space-replay')?.canClaim),
+    problem: '现有退出方式缺乏可重复的纪律，结果受临场判断影响。',
+    action: replayBest ? `验证「${replayBest.label}」规则。` : '验证 trailing / 持有时限等预设退出规则。',
+    excludes: '规则回放只覆盖有日线路径的交易，不含同日或缺行情交易。',
+    risk: '机械规则可能在某些市场状态下系统性劣于人工管理。',
+    stage: replayBest ? '已验证' : '历史回放未通过',
   })
 
   if (bh || spy) {
@@ -416,7 +485,7 @@ function howQueue(book: Book, items: Diagnosis[], experiments: ExperimentRecord[
         : `≥1 日 n=${restN}`
     out.push({
       id: 'intraday',
-      title: '日内平仓（候选）',
+      title: '日内与隔夜持有差异',
       kind: 'historical',
       status: 'pending',
       historical: holdH1.n >= 5 ? holdH1.pnl : null,
@@ -425,38 +494,39 @@ function howQueue(book: Book, items: Diagnosis[], experiments: ExperimentRecord[
       finding: `${h1Line}。对照：${restLine}。这与「≥5 日亏损」不是同一个假设，不能用长持仓数字支持日内平仓。`,
       next: '待 <1 日 vs ≥1 日证据站稳后再认领。现在不要改成日内策略。',
       canClaim: false,
+      problem: '日内平仓是否优于隔夜 / 多日持有，证据尚未站稳。',
+      action: '待 <1 日 vs ≥1 日对照证据站稳后再考虑，不直接改成日内策略。',
+      excludes: '与「≥5 日亏损」不是同一个假设；不能用长持仓数字支持日内平仓。',
+      risk: '日内交易受 PDT 约束，且频繁进出会推高成本。',
+      stage: '待分析',
     })
   }
 
   return [...out].sort((a, b) => queueRank(b) - queueRank(a))
 }
 
-function howLeadOf(book: Book, queue: HowQueueRow[], experiments: ExperimentRecord[]): string {
+function howLeadOf(book: Book): { problem: string; action: string; limit: string } {
   const gb = book.space.giveback
-  const cap = gb.nPath > 0 && gb.nFloated >= 5 && gb.sumDollar != null ? money(gb.sumDollar) : null
-  const running = experiments.some((e) => e.status === 'active' && isDay4Shadow(e.constraint))
-  const misaligned = experiments.some((e) => e.status === 'active' && isMisalignedHoldExperiment(e.constraint))
-  const hold = queue.find((r) => r.id === 'hold-h3')
-  if (cap) {
-    const expBit = misaligned
-      ? '先把当前实验修正为第 4 个交易日收盘退出'
-      : running || hold
-        ? '继续第 4 个交易日收盘影子实验'
-        : '认领第 4 个交易日收盘影子实验'
-    return `本期观察到明显的浮盈回吐，但尚未验证出可靠的退出规则。${cap} 是日线路径下的理论回吐上限，不是可实现收益。当前建议${expBit}，并补齐 MAE/MFE 路径；2%～20% 硬止损和现有 5 条退出规则暂不建议采用。`
-  }
-  return '当前没有已验证、可直接上线的修复规则。先补齐日线路径，再决定是否做退出规则回放。硬止损和现有预设退出规则暂不建议采用。'
+  const topShare = givebackTopShare(book)
+
+  const conc = topShare != null && topShare >= 0.7 ? `前 5 笔贡献超过 ${Math.round(topShare * 100)}%` : '高度集中'
+  const problem = `损失主要集中在少数长持仓和高回吐交易中，但${conc}，不代表普遍问题。`
+  const action = '优先约束单笔亏损规模与建仓风险，而不是按持仓天数统一干预。'
+  const hasPathGap = gb.nPath > 0 && gb.nPath < gb.nClosed
+  const limit = `该结论基于当前账本${hasPathGap ? '（部分交易缺少日线路径）' : ''}，不构成后续追踪承诺。`
+  return { problem, action, limit }
 }
 
-function howTabSummary(book: Book, experiments: ExperimentRecord[]): string {
-  const gb = book.space.giveback
-  const theory =
-    gb.nPath > 0 && gb.nFloated >= 5 && gb.sumDollar != null ? money(gb.sumDollar) : '—'
-  const stop = book.space.stopScan?.bestPreset
-  const replay = book.space.ruleReplay.bestPreset
-  const verified = Math.max(0, stop && stop.delta > 0 ? stop.delta : 0, replay && replay.delta > 0 ? replay.delta : 0)
-  const active = experiments.filter((e) => e.status === 'active').length
-  return `理论回吐上限 ${theory}｜已验证改善 ${money(verified)}｜${active} 项实验中`
+function howTabSummary(book: Book): string {
+  const actions = evaluateActions(book.space)
+  const exec = actions.filter((a) => a.kind === 'replay' || a.kind === 'stop')
+  const unsupported = exec.filter((a) => a.verdict === '当前不支持')
+  const worth = exec.filter((a) => a.verdict === '值得考虑')
+  const s = book.sensitivity
+  if (exec.length && unsupported.length === exec.length) return '统一退出/止损未改善历史结果'
+  if (worth.length) return '部分改法有历史依据'
+  if (s.top5Share != null && s.top5Share >= 0.5) return '亏损集中在少数大额交易'
+  return '暂无可靠改进规则'
 }
 
 function improveItems(queue: HowQueueRow[]): ImproveItem[] {
@@ -538,12 +608,11 @@ export function buildCover(
   book: Book,
   items: Diagnosis[],
   health: HealthReport,
-  experiments: ExperimentRecord[],
 ): CoverReport {
   const n = book.performance.closedCount
   const struct = structureVerdict(book, items)
   const luck = luckLine(book)
-  const queue = howQueue(book, items, experiments)
+  const queue = howQueue(book, items)
   const bench = benchLineOf(book)
   return {
     verdict: struct.long,
@@ -560,12 +629,12 @@ export function buildCover(
     summaries: {
       what: `${struct.short} · 数据${health.score >= 0.7 ? '较完整' : health.score >= 0.4 ? '中等可信' : '缺口较多'}`,
       why: whyTabSummary(items, luck.short),
-      how: howTabSummary(book, experiments),
+      how: howTabSummary(book),
     },
     be: beOf(book),
     queue,
     improve: improveItems(queue),
-    howLead: howLeadOf(book, queue, experiments),
+    howLead: howLeadOf(book),
     mainAction: pickAction(items),
     whyLead: whyLead(book, items, health),
   }

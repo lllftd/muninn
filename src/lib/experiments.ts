@@ -45,6 +45,15 @@ export type ExperimentEvaluation = {
   }
 }
 
+/** 开始实验前由用户预先记录、用于第 4 日判断是否入组的条件（不能事后解释）。 */
+export type EligibilityRecord = {
+  tradeType: string
+  planHold: string
+  entryLogic: string
+  invalidation: string
+  extendException: string
+}
+
 export type ExperimentRecord = {
   id: string
   createdAt: string
@@ -61,6 +70,8 @@ export type ExperimentRecord = {
   closeReason?: string
   closeKind?: 'cancel' | 'early' | 'complete'
   lastEvaluation?: ExperimentEvaluation
+  /** 第 4 日退出实验的事先入组条件；仅当用户开始实验前填写后才存在。 */
+  eligibility?: EligibilityRecord
 }
 
 const KEY = 'muninn.experiments.v1'

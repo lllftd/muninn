@@ -4,6 +4,7 @@ import {
   BOOTSTRAP_SEED,
   ciFromSamples,
   clusterBootstrapSamples,
+  cvar,
   mean,
   median,
   mulberry32,
@@ -11,6 +12,7 @@ import {
   pearson,
 } from '../lib/stats.ts'
 import { holdBucketOf, HOLD_BUCKET_LABELS } from './checkup.ts'
+import { buildCounterfactual } from './counterfactual.ts'
 import type {
   Bar,
   EvLever,
@@ -233,6 +235,8 @@ function buildRuleReplay(path: RoundTrip[], bars: Record<string, Bar[]>, seed: n
         pValue: null as number | null,
         fdr: false,
         computable: false,
+        cvar95: null as number | null,
+        improveProb: null as number | null,
       }
     }
     const byId = new Map<string, { pnl: number; triggered: boolean; eligible: boolean }>()
@@ -265,6 +269,8 @@ function buildRuleReplay(path: RoundTrip[], bars: Record<string, Bar[]>, seed: n
             SPACE_ROUNDS,
           )
         : []
+    const losses = path.map((t) => -(byId.get(t.id)?.pnl ?? t.realizedPnl))
+    const improveProb = samples.length ? samples.filter((s) => s > 0).length / samples.length : null
     return {
       id: spec.id,
       family: spec.family,
@@ -277,6 +283,8 @@ function buildRuleReplay(path: RoundTrip[], bars: Record<string, Bar[]>, seed: n
       pValue: oneSidedP(samples),
       fdr: false,
       computable: true,
+      cvar95: cvar(losses),
+      improveProb,
     }
   })
   const fdrIdx = raw.map((r, i) => (r.computable ? i : -1)).filter((i) => i >= 0)
@@ -289,10 +297,12 @@ function buildRuleReplay(path: RoundTrip[], bars: Record<string, Bar[]>, seed: n
   })
   const survivors = raw.filter((r) => r.computable && r.fdr && r.delta > 0)
   const bestPreset = survivors.length ? [...survivors].sort((a, b) => b.delta - a.delta)[0] : null
+  const actualCvar95 = cvar(path.map((t) => -t.realizedPnl))
   return {
     actualPnl,
     rules: raw,
     bestPreset,
+    actualCvar95,
     note: '只回放 5 档预设（trailing 10%/20%，持有 1/5/10 日），开盘 30 分钟没有分时所以算不了。日线先检查昨高峰再更新，不假设同根 K 线先摸高。过 FDR 的正档才能认领，不是曲线里最好看的那条。',
   }
 }
@@ -731,5 +741,6 @@ export function buildSpace(trips: RoundTrip[], bars: Record<string, Bar[]> = {})
     oppCost: buildOppCost(closed, path, bars, BOOTSTRAP_SEED + 90),
     psm: buildPsm(closed, BOOTSTRAP_SEED + 110),
     kelly: buildKelly(closed),
+    counterfactual: buildCounterfactual(trips, bars),
   }
 }

@@ -3,83 +3,23 @@ import { ColorScatter } from './charts.tsx'
 import type { HowQueueRow } from '../engine/cover.ts'
 import type { ExperimentEvaluation } from '../lib/experiments.ts'
 import type { ReplayRule } from '../types.ts'
-import {
-  type LadderStep,
-  type SampleComposition,
-  type SampleSlice,
-  queueEvidenceLevel,
-  queueImpact,
-} from './howViz.ts'
+import { type SampleComposition, type SampleSlice, experimentResult, queueImpact } from './howViz.ts'
 
-export function HowMetricCards(props: {
-  theory: number | null
-  verified: number
-  shadowN: number
-  targetN: number
-  floated: number
-  nClosed: number
-  waiting: boolean
-  pendingReplace?: boolean
-  idle?: boolean
-}) {
-  const rate = props.nClosed ? pctPlain(props.floated / props.nClosed, 0) : '—'
-  const cards = [
-    {
-      id: 'theory',
-      k: '理论回吐上限',
-      v: props.theory == null ? '—' : money(props.theory),
-      s: '非可实现收益',
-      tone: 'gold',
-    },
-    {
-      id: 'verified',
-      k: '已验证改善',
-      v: money(props.verified),
-      s: props.verified > 0 ? '已通过验证' : '尚无规则通过',
-      tone: props.verified > 0 ? 'up' : 'mute',
-    },
-    {
-      id: 'exp',
-      k: '当前实验',
-      v: props.pendingReplace ? '待修正' : props.idle ? '未开始' : `${props.shadowN}/${props.targetN}`,
-      s: props.pendingReplace ? '日内实验待替换' : props.idle ? '尚未认领实验' : props.waiting ? '等待首笔有效配对' : '影子配对进行中',
-      tone: 'blue',
-    },
-    {
-      id: 'path',
-      k: '路径有效样本',
-      v: `${props.floated}/${props.nClosed || '—'}`,
-      s: `浮盈回吐有效率 ${rate}`,
-      tone: 'warn',
-    },
+export function HowStatusBar(props: { verified: number; activeN: number; pendingN: number }) {
+  const items: Array<{ k: string; v: string }> = [
+    { k: '已验证改善', v: money(props.verified) },
+    { k: '实验中', v: String(props.activeN) },
+    { k: '待验证', v: String(props.pendingN) },
   ]
   return (
-    <div className="how-metrics">
-      {cards.map((c) => (
-        <article key={c.id} className={`how-metric how-metric-${c.tone}`}>
-          <p className="how-metric-k">{c.k}</p>
-          <p className="how-metric-v">{c.v}</p>
-          <p className="tiny">{c.s}</p>
-        </article>
+    <div className="how-status">
+      {items.map((it) => (
+        <span key={it.k} className="how-status-item">
+          <b>{it.k}</b>
+          <em>{it.v}</em>
+        </span>
       ))}
     </div>
-  )
-}
-
-export function EvidenceLadder(props: { steps: LadderStep[] }) {
-  return (
-    <ol className="how-ladder">
-      {props.steps.map((s, i) => (
-        <li key={s.id} className={`how-ladder-step is-${s.state}`}>
-          {i ? <span className="how-ladder-line" aria-hidden /> : null}
-          <span className="how-ladder-dot" aria-hidden>
-            {s.state === 'current' ? '◎' : s.state === 'verified' ? '●' : s.state === 'done' ? '●' : '○'}
-          </span>
-          <b>{s.title}</b>
-          <em>{s.detail}</em>
-        </li>
-      ))}
-    </ol>
   )
 }
 
@@ -224,20 +164,24 @@ export function CumImprove(props: { pairs: Array<{ shadow: number; actual: numbe
 }
 
 export function PairSummary(props: { ev: ExperimentEvaluation }) {
-  const pairs = props.ev.pairs ?? []
-  const better = pairs.filter((p) => p.shadow - p.actual > 0).length
-  const worse = pairs.filter((p) => p.shadow - p.actual < 0).length
+  const r = experimentResult(props.ev)
   const ci = props.ev.deltaCi
   return (
     <ul className="tiny plain-facts how-pair-sum">
-      <li>平均改善 {props.ev.delta == null ? '—' : money(props.ev.delta)}</li>
       <li>
-        改善 {better} / 恶化 {worse}
+        帮助 {r.better} 笔｜伤害 {r.worse} 笔{r.neutral ? `｜无影响 ${r.neutral} 笔` : ''}
       </li>
+      <li>中位改善 {r.medianDelta == null ? '—' : money(r.medianDelta)}</li>
+      <li>累计改善 {money(r.total)}</li>
+      <li>最大单笔伤害 {r.maxHarm == null ? '—' : money(r.maxHarm)}</li>
+      <li>平均改善 {props.ev.delta == null ? '—' : money(props.ev.delta)}</li>
       <li>被截断盈利 {props.ev.guards?.winTruncation == null ? '本样本无法算' : money(props.ev.guards.winTruncation)}</li>
       <li>
         80% 区间 {ci ? `${money(ci.lo)} ~ ${money(ci.hi)}` : '样本不足'}
         {ci ? '（探索性，非高置信）' : ''}
+      </li>
+      <li>
+        当前结论：{r.n < 5 ? '样本不足，暂不下结论。' : '样本有限，优先看中位数与伤害笔数，不只看累计金额。'}
       </li>
       <li>费用已含在单笔盈亏中；机会成本本样本无法从影子回放单独拆出。</li>
     </ul>
@@ -246,42 +190,10 @@ export function PairSummary(props: { ev: ExperimentEvaluation }) {
 
 function kindWord(row: HowQueueRow) {
   if (row.status === 'verified') return '已验证改善'
-  if (row.recoverableKind === 'theoretical') return '机械理论上限，斜纹不是进度'
-  if (row.recoverableKind === 'mechanical') return '机械反事实上限，斜纹不是进度'
+  if (row.recoverableKind === 'theoretical') return '历史机会金额（非可实现收益）'
+  if (row.recoverableKind === 'mechanical') return '历史损失暴露（机械上限）'
   if (row.historical != null) return '历史实际金额'
   return '影响金额未知'
-}
-
-export function QueueList(props: {
-  rows: HowQueueRow[]
-  claimedIds: string[]
-  onClaim: (id: string) => void
-}) {
-  const maxAbs = Math.max(1, ...props.rows.map((r) => Math.abs(queueImpact(r).amount ?? 0)))
-  return (
-    <div className="how-q-list">
-      {props.rows.map((r) => {
-        const ev = queueEvidenceLevel(r)
-        return (
-          <article key={r.id} className={`how-q-card how-st-${r.status}`}>
-            <div className="how-q-l1">
-              <b>{r.title}</b>
-              <QueueImpactBar row={r} maxAbs={maxAbs} />
-              <span className={`how-chip how-chip-${r.status}`}>{statusWord(r.status)}</span>
-            </div>
-            <p className="tiny how-q-l2">
-              {kindWord(r)}｜证据：{ev.note}｜下一步：{r.next}
-            </p>
-            {r.canClaim && r.diagnosisId && !props.claimedIds.includes(r.diagnosisId) ? (
-              <button type="button" className="ghost sm" onClick={() => props.onClaim(r.diagnosisId!)}>
-                开始影子实验
-              </button>
-            ) : null}
-          </article>
-        )
-      })}
-    </div>
-  )
 }
 
 function statusWord(s: HowQueueRow['status']) {
@@ -293,12 +205,22 @@ function statusWord(s: HowQueueRow['status']) {
   return '参考'
 }
 
+function evidenceAnchorOf(id: string): string | null {
+  if (id === 'giveback') return 'giveback-scatter'
+  if (id === 'hold-h3') return 'hold-scatter'
+  if (id === 'stops') return 'stop-scan'
+  if (id === 'replay') return 'rule-replay'
+  return null
+}
+
 export function QueueImpactBar(props: { row: HowQueueRow; maxAbs: number }) {
   const hit = queueImpact(props.row)
   const w = hit.amount == null || props.maxAbs <= 0 ? 0 : Math.min(100, (Math.abs(hit.amount) / props.maxAbs) * 100)
   return (
     <div className="how-q-impact">
-      <span className="how-q-amt">{hit.amount == null ? '未知' : money(hit.amount)}</span>
+      <span className="how-q-amt">
+        {kindWord(props.row)}：{hit.amount == null ? '未知' : money(hit.amount)}
+      </span>
       <span className="how-q-track">
         <i className={`how-q-fill how-q-${hit.kind}`} style={{ width: `${w}%` }} />
       </span>
@@ -306,15 +228,121 @@ export function QueueImpactBar(props: { row: HowQueueRow; maxAbs: number }) {
   )
 }
 
-export function EvidencePips(props: { row: HowQueueRow }) {
-  const { filled, note } = queueEvidenceLevel(props.row)
+export function QueueList(props: { rows: HowQueueRow[] }) {
+  const maxAbs = Math.max(1, ...props.rows.map((r) => Math.abs(queueImpact(r).amount ?? 0)))
   return (
-    <div className="how-pips" title={note}>
-      {Array.from({ length: 4 }, (_, i) => (
-        <i key={i} className={i < filled ? 'on' : ''} />
+    <div className="how-q-list">
+      {props.rows.map((r) => (
+        <CandidateCard key={r.id} row={r} maxAbs={maxAbs} />
       ))}
-      <span className="tiny">{note}</span>
     </div>
+  )
+}
+
+function actionLabelOf(r: HowQueueRow): string {
+  if (r.status === 'verified') return '如何优化'
+  if (r.stage === '观察阶段') return '下一步验证'
+  return '候选改法'
+}
+
+function CandidateCard(props: { row: HowQueueRow; maxAbs: number }) {
+  const r = props.row
+  const anchor = evidenceAnchorOf(r.id)
+  const stage = r.stage ?? statusWord(r.status)
+  const conc = r.concentrationShare
+  const highConc = conc != null && conc >= 0.7
+  const isIntraday = r.id === 'intraday'
+
+  const header = (
+    <div className="how-q-l1">
+      <b>{r.title}</b>
+      <span className={`how-chip how-chip-${r.status}`}>{stage}</span>
+    </div>
+  )
+
+  const fields = (
+    <dl className="how-q-fields">
+      {r.problem ? (
+        <div className="how-q-field">
+          <dt>哪里做得不好</dt>
+          <dd>{r.problem}</dd>
+        </div>
+      ) : null}
+      {r.scope ? (
+        <div className="how-q-field">
+          <dt>发生范围</dt>
+          <dd>{r.scope}</dd>
+        </div>
+      ) : null}
+      {r.conclusion ? (
+        <div className="how-q-field">
+          <dt>当前结论</dt>
+          <dd>{r.conclusion}</dd>
+        </div>
+      ) : null}
+      {r.action ? (
+        <div className="how-q-field">
+          <dt>{actionLabelOf(r)}</dt>
+          <dd>{r.action}</dd>
+        </div>
+      ) : null}
+      {r.excludes ? (
+        <div className="how-q-field">
+          <dt>不适用于</dt>
+          <dd>{r.excludes}</dd>
+        </div>
+      ) : null}
+      {r.risk ? (
+        <div className="how-q-field">
+          <dt>潜在副作用</dt>
+          <dd>{r.risk}</dd>
+        </div>
+      ) : null}
+    </dl>
+  )
+
+  const meta = (
+    <div className="how-q-meta">
+      {isIntraday ? (
+        r.historical != null ? <span className="how-q-conc">日内交易历史合计 {money(r.historical)}</span> : null
+      ) : (
+        <QueueImpactBar row={r} maxAbs={props.maxAbs} />
+      )}
+      {conc != null ? (
+        <span className={`how-q-conc${highConc ? ' warn' : ''}`}>
+          前 5 笔占 {pctPlain(conc, 0)}
+          {highConc ? ' · 主要由少数极端交易驱动，不代表普遍问题' : ''}
+        </span>
+      ) : null}
+      {anchor ? (
+        <a className="link how-q-evidence" href={`#${anchor}`}>
+          查看实验依据
+        </a>
+      ) : null}
+    </div>
+  )
+
+  if (isIntraday) {
+    return (
+      <details className={`how-q-card how-st-${r.status} how-q-collapsed`}>
+        <summary>
+          {header}
+          <p className="tiny">当前证据：不足以支持改为日内平仓。</p>
+        </summary>
+        {fields}
+        {r.finding ? <p className="tiny how-q-l2">{r.finding}</p> : null}
+        {meta}
+      </details>
+    )
+  }
+
+  return (
+    <article className={`how-q-card how-st-${r.status}`}>
+      {header}
+      {fields}
+      {r.finding ? <p className="tiny how-q-l2">{r.finding}</p> : null}
+      {meta}
+    </article>
   )
 }
 
@@ -349,7 +377,7 @@ export function RuleHeat(props: { rules: ReplayRule[] }) {
 }
 
 export function HowXyScatter(props: {
-  points: Array<{ id: string; x: number; y: number; up: boolean; label?: string; size?: number }>
+  points: Array<{ id: string; x: number; y: number; up: boolean; label?: string; size?: number; color?: string }>
   vRef?: number
   vRefLabel?: string
   hRef?: number
@@ -392,7 +420,7 @@ export function HowXyScatter(props: {
           y: p.y,
           r: p.size,
           label: p.label,
-          color: p.up ? 'var(--est)' : 'var(--down)',
+          color: p.color ?? (p.up ? 'var(--est)' : 'var(--down)'),
         }))}
       />
     </div>
@@ -407,6 +435,22 @@ export function ScatterLegend() {
       </li>
       <li>
         <i className="down" /> 最终亏损
+      </li>
+    </ul>
+  )
+}
+
+export function GivebackLegend() {
+  return (
+    <ul className="how-scatter-legend">
+      <li>
+        <i className="partial" /> 部分回吐
+      </li>
+      <li>
+        <i className="full" /> 全部回吐
+      </li>
+      <li>
+        <i className="loss" /> 回吐后转亏
       </li>
     </ul>
   )

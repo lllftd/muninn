@@ -1,4 +1,5 @@
 import { etDateKey } from '../lib/time.ts'
+import { money } from '../lib/format.ts'
 import type { Book, RoundTrip, SessionBucket } from '../types.ts'
 
 export function closedEpisodes(trips: RoundTrip[]): RoundTrip[] {
@@ -367,7 +368,7 @@ export function holdUiRows(trips: RoundTrip[]): HoldUiRow[] {
       median: median(pnls),
       winRate: list.length ? list.filter((t) => t.realizedPnl > 0).length / list.length : null,
       pnl,
-      points: list.map((t) => ({ id: t.id, v: t.realizedPnl, label: `${t.symbol} ${t.realizedPnl}` })),
+      points: list.map((t) => ({ id: t.id, v: t.realizedPnl, label: `${t.symbol} ${money(t.realizedPnl)}` })),
     }
   })
 }

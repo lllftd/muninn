@@ -41,7 +41,7 @@ export function AttrWaterfallBlock(props: {
   return (
     <div className="why-chart">
       <p className="tiny">
-        瀑布：总盈亏由哪些块一步步抵消。n={props.trips.length}
+        各分组已实现盈亏贡献（每根从 0 起，红负绿正）。n={props.trips.length}
       </p>
       <div className="sorts">
         {WF_DIMS.map((d) => (
@@ -51,6 +51,7 @@ export function AttrWaterfallBlock(props: {
         ))}
       </div>
       <Waterfall
+        flat
         height={280}
         steps={steps.map((s) => ({
           ...s,

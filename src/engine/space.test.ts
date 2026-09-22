@@ -195,6 +195,26 @@ describe('rule replay spectrum', () => {
     expect(space.ruleReplay.note).toMatch(/分时/)
     if (space.ruleReplay.bestPreset) expect(space.ruleReplay.bestPreset.computable).toBe(true)
   })
+
+  it('attaches tail loss CVaR and improvement probability to computable rules', () => {
+    const trips = Array.from({ length: 20 }, (_, i) =>
+      t({
+        id: `r${i}`,
+        openTime: new Date(Date.UTC(2024, 0, 2 + i)),
+        closeTime: new Date(Date.UTC(2024, 0, 8 + i)),
+        realizedPnl: i % 2 ? 4 : -9,
+      }),
+    )
+    const space = buildSpace(trips, {})
+    const hold5 = space.ruleReplay.rules.find((r) => r.id === 'hold-5')
+    expect(hold5).toBeTruthy()
+    expect(hold5?.cvar95 ?? -1).toBeGreaterThanOrEqual(0)
+    expect(space.ruleReplay.actualCvar95 ?? -1).toBeGreaterThanOrEqual(0)
+    if (hold5?.improveProb != null) {
+      expect(hold5.improveProb).toBeGreaterThanOrEqual(0)
+      expect(hold5.improveProb).toBeLessThanOrEqual(1)
+    }
+  })
 })
 
 describe('opportunity cost', () => {

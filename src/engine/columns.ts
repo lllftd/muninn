@@ -68,6 +68,7 @@ const ALIASES = {
   currency: ['currency', 'currencyprimary', 'ccy', '币种', '结算币种', '货币'],
   asset: ['asset class', 'assetclass', 'asset category', 'assetcategory', 'sec type', 'sectype', '品种', '证券类型'],
   disc: ['data discriminator', 'datadiscriminator'],
+  executionId: ['trade id', 'tradeid', 'exec id', 'execid', 'execution id', 'transaction id', 'trans id', 'ref', '成交编号', '委托编号', '订单编号', '成交单号', '交易编号'],
 }
 
 export function pickField(row: Record<string, string>, field: keyof typeof ALIASES): string {

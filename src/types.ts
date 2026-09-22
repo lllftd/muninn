@@ -42,6 +42,14 @@ export type Fill = {
   fees: number
   orderId?: string
   kind: 'trade' | 'drip'
+  /** 统一事件模型：稳定唯一身份（生命周期追溯与去重用），见 lib/instrument.ts。 */
+  eventUid?: string
+  /** 内容指纹：字段一致则一致，仅用于疑似重复检测，不作身份。 */
+  eventFingerprint?: string
+  /** 券商成交 ID（若导出提供）。 */
+  brokerExecutionId?: string
+  /** 统一资产类型。正股为 'stock'；期权在 L1 接入后走 OptionTradeEvent，不占用 Fill。 */
+  instrumentType?: 'stock'
 }
 
 export type BrokerOrder = {
@@ -252,10 +260,15 @@ export type Performance = {
   accountReturnReason: string | null
   initialCapital: number | null
   finalEquity: number | null
+  /** 盯市口径：账户或正股子账的累计盈亏（未平仓按最新价/最近收盘），= realized + unrealized + 勾稽差额。 */
   netPnl: number
+  /** 已实现口径：已平仓往返的实际盈亏。 */
   realizedPnl: number
+  /** 未实现口径：盯市 - 已实现（需要 mtm，账户/子账无净值时为 null）。 */
   unrealizedPnl: number | null
+  /** 现金流口径：外部入金。 */
   deposits: number
+  /** 现金流口径：外部出金。 */
   withdrawals: number
   feeDrag: number
   twr: number | null
@@ -561,12 +574,18 @@ export type ReplayRule = {
   pValue: number | null
   fdr: boolean
   computable: boolean
+  /** 规则下的尾部损失 CVaR（最差 10% 亏损均值，正数）。null = 样本不足。 */
+  cvar95: number | null
+  /** Bootstrap P(总改善 > 0)。null = 样本不足。 */
+  improveProb: number | null
 }
 
 export type RuleReplay = {
   actualPnl: number
   rules: ReplayRule[]
   bestPreset: ReplayRule | null
+  /** 实际交易的尾部损失 CVaR（对照基准）。 */
+  actualCvar95: number | null
   note: string
 }
 
@@ -648,6 +667,72 @@ export type SpaceReport = {
   oppCost: OppCost
   psm: PsmReport
   kelly: KellyReport | null
+  counterfactual: CounterfactualReport
+}
+
+/** 一条候选动作的反事实评估结果。 */
+export type CounterfactualAction = {
+  id: string
+  name: string
+  delta: number
+  /** 动作下每笔亏损（-pnl）的尾部均值 CVaR，正数。null = 样本不足。 */
+  cvar95: number | null
+  /** Bootstrap P(总改善 > 0)。null = 样本不足。 */
+  improveProb: number | null
+  /** Bootstrap 80% 区间（总改善金额）。null = 样本不足。 */
+  ciLo: number | null
+  ciHi: number | null
+  n: number
+  /** 实际触发该动作的交易数（cf != 实际）。0 表示未触发，结果不可估计。 */
+  triggered: number
+  /** 计算口径：replay=真实回放；upper-bound=理论上限（不可执行）；proxy=代理估计。 */
+  kind: 'replay' | 'upper-bound' | 'proxy'
+  note: string
+}
+
+/** 分策略的贝叶斯收缩估计。 */
+export type RegimeBayes = {
+  regime: Regime
+  label: string
+  n: number
+  /** 收缩后的规则改善均值（金额）。 */
+  meanDelta: number | null
+  /** P(真实改善 > 0 | 数据)。 */
+  probImprove: number | null
+  /** 后验 80% 可信区间（金额）。 */
+  ciLo: number | null
+  ciHi: number | null
+}
+
+export type CounterfactualReport = {
+  actions: CounterfactualAction[]
+  /** 实际交易尾部损失 CVaR 基准。 */
+  actualCvar95: number | null
+  /** 条件退出动作的分策略贝叶斯收缩。 */
+  byRegime: RegimeBayes[]
+  /** 「异常长时间浮亏」生存分析：超过持仓 80% 分位且仍浮亏的交易，后续恢复/恶化情况。 */
+  survival: SurvivalReport
+}
+
+/** 生存/竞争风险：给定「超期且浮亏」状态，估计后续恢复与恶化的概率。 */
+export type SurvivalReport = {
+  /** 持仓时长的 80% 分位（天）。null = 样本不足。 */
+  hold80: number | null
+  /** 满足价格路径的交易数（eligible）。 */
+  eligible: number
+  /** 进入「超期且浮亏」状态的交易数（triggered）。 */
+  underwaterLong: number
+  /** 其中最终恢复（finalPnl > 0）的交易数。 */
+  recovered: number
+  /** 其中最终继续恶化（亏损扩大超过 1 个风险单位）的交易数。 */
+  deteriorated: number
+  /** 观察期内既未恢复也未恶化的交易数（删失）。 */
+  censored: number
+  /** P(恢复)。null = 样本不足。 */
+  recoverProb: number | null
+  /** P(继续恶化)。null = 样本不足。 */
+  deteriorateProb: number | null
+  note: string
 }
 
 export type Book = {

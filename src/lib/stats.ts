@@ -43,6 +43,29 @@ export function quantile(xs: number[], q: number): number | null {
   return a[lo] * (hi - i) + a[hi] * (i - lo)
 }
 
+/** 尾部均值（CVaR）：最差的 (1-q) 比例样本的均值。q=0.9 表示只看最差 10%。样本少时尾部估计较粗糙。 */
+export function cvar(xs: number[], q = 0.9): number | null {
+  if (xs.length < 5) return null
+  const a = [...xs].sort((x, y) => x - y)
+  const i = Math.max(0, Math.floor(a.length * q))
+  const tail = a.slice(i)
+  return tail.length ? mean(tail) : null
+}
+
+/** 累计序列的最大回撤（从运行峰值到谷底的最大跌幅，返回正值）。 */
+export function maxDrawdown(xs: number[]): number {
+  let peak = 0
+  let cum = 0
+  let maxDd = 0
+  for (const x of xs) {
+    cum += x
+    if (cum > peak) peak = cum
+    const dd = peak - cum
+    if (dd > maxDd) maxDd = dd
+  }
+  return maxDd
+}
+
 export function stdev(xs: number[], ddof = 1): number {
   if (xs.length < 2) return 0
   const m = mean(xs)

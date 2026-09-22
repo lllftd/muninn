@@ -21,6 +21,10 @@ function unpackQuotes(raw: CompactQuotes): QuotePack {
 
 const STAGES = ['正在校验现金流', '正在重建账户日收益', '正在对齐基准和无风险利率', '正在运行 Bootstrap']
 
+function stageLabel(step: number): string {
+  return `第 ${step + 1}/${STAGES.length} 步 · ${STAGES[step]}`
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -30,6 +34,7 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [stage, setStage] = useState<string | null>(null)
+  const [progress, setProgress] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const lastContext = useRef<{
     fillText: string
@@ -55,8 +60,9 @@ export default function App() {
       setUpdating(replacing)
       setError(null)
       try {
-        setStage(STAGES[0])
-        await sleep(160)
+        setStage(stageLabel(0))
+        setProgress(1 / STAGES.length)
+        await sleep(500)
         const imported = importFutu(args.fillText, args.orderText)
         const symbols = [...new Set(imported.fills.map((f) => f.symbol))]
         const times = imported.fills.map((f) => f.time.getTime()).filter((n) => Number.isFinite(n))
@@ -64,12 +70,15 @@ export default function App() {
         const max = times.length ? new Date(Math.max(...times)) : new Date()
         const start = new Date(min.getTime() - 400 * 86400000).toISOString().slice(0, 10)
         const end = etDateKey(max)
-        setStage(STAGES[1])
-        await sleep(120)
-        setStage(STAGES[2])
+        setStage(stageLabel(1))
+        setProgress(2 / STAGES.length)
+        await sleep(500)
+        setStage(stageLabel(2))
+        setProgress(3 / STAGES.length)
         const quotes = args.quotesOverride ?? (await fetchQuotes(symbols, start, end))
-        setStage(STAGES[3])
-        await sleep(80)
+        setStage(stageLabel(3))
+        setProgress(4 / STAGES.length)
+        await sleep(400)
         const next = assembleBook({
           fillText: args.fillText,
           orderText: args.orderText,
@@ -100,6 +109,7 @@ export default function App() {
       } finally {
         setBusy(false)
         setUpdating(false)
+        setProgress(null)
       }
     },
     [book],
@@ -114,7 +124,7 @@ export default function App() {
       setError(null)
       try {
         setStage('正在重建账户日收益')
-        await sleep(120)
+        await sleep(400)
         const next = assembleBook({
           fillText: ctx.fillText,
           orderText: ctx.orderText,
@@ -137,6 +147,7 @@ export default function App() {
       } finally {
         setBusy(false)
         setUpdating(false)
+        setProgress(null)
       }
     },
     [],
@@ -170,6 +181,7 @@ export default function App() {
       <Landing
         busy={busy}
         stage={stage}
+        progress={progress}
         error={error}
         onSample={loadRealSample}
         onSubmit={runUpload}
@@ -181,12 +193,14 @@ export default function App() {
     <Dashboard
       book={book}
       stage={stage}
+      progress={progress}
       updating={updating}
       onReset={() => {
         lastContext.current = null
         setBook(null)
         setStage(null)
         setError(null)
+        setProgress(null)
       }}
       onSample={loadRealSample}
       onUpdateAccount={updateAccount}

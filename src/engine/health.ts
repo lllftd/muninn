@@ -91,7 +91,7 @@ export function buildHealth(book: Book): HealthReport {
     ),
   )
 
-  const label = `账户层数据覆盖 ${Math.round(score * 100)}%`
+  const label = `账户字段覆盖 ${Math.round(score * 100)}%`
 
   return { tone, label, score, imported, total, maeShare: mae, tasks, coverage }
 }
