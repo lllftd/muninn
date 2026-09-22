@@ -438,9 +438,21 @@ export type ImportResult = {
   }
 }
 
+export type QuoteStatus = 'ok' | 'partial' | 'unavailable'
+
+/** 单标的行情来源元数据，用于报告展示「来源/复权口径/覆盖率」。 */
+export type QuoteMeta = {
+  provider: 'alpaca' | 'yahoo' | 'stooq' | null
+  feed: 'iex' | 'sip' | 'unknown'
+  adjusted: boolean
+  warnings: string[]
+}
+
 export type QuotePack = {
   bars: Record<string, Bar[]>
   splits: Record<string, number>
+  status?: QuoteStatus
+  meta?: Record<string, QuoteMeta>
 }
 
 export type Sensitivity = {

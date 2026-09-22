@@ -22,7 +22,7 @@ import { buildHealth } from '../engine/health.ts'
 import { buildCross } from '../engine/cross.ts'
 import { buildSpace } from '../engine/space.ts'
 import { loadProPrefs, saveProPrefs, type ProPrefs } from '../lib/proPrefs.ts'
-import type { Bar, Book, Checkup, CoverageRow, EquityPoint, GroupRow, MetricPoint, RoundTrip } from '../types.ts'
+import type { Bar, Book, Checkup, CoverageRow, EquityPoint, GroupRow, MetricPoint, QuoteStatus, RoundTrip } from '../types.ts'
 
 type SortKey = 'time' | 'pnl' | 'r' | 'hold'
 type SideFilter = 'all' | 'long' | 'short'
@@ -1063,6 +1063,8 @@ export function Dashboard(props: {
   stage?: string | null
   progress?: number | null
   updating?: boolean
+  quoteStatus?: QuoteStatus
+  onRetryQuotes?: () => void
   onReset: () => void
   onSample: () => void
   onUpdateAccount?: (args: { initialCapital: number | null; cashText: string; cashflowComplete: boolean }) => void
@@ -1326,6 +1328,23 @@ export function Dashboard(props: {
         <div className="banner fail">
           <strong>收益路径异常，账户级结果不可用</strong>
           <div>{p.pathAudit?.issues.join('；')}</div>
+        </div>
+      ) : null}
+
+      {props.quoteStatus === 'unavailable' ? (
+        <div className="banner">
+          <strong>行情数据暂不可用</strong>
+          <div>当前仅展示基于已导入成交记录的复盘。收益曲线、基准对比及依赖行情的指标可能不可用。</div>
+          {props.onRetryQuotes ? (
+            <button type="button" className="ghost sm" style={{ marginTop: 8 }} onClick={props.onRetryQuotes}>
+              重试拉取行情
+            </button>
+          ) : null}
+        </div>
+      ) : props.quoteStatus === 'partial' ? (
+        <div className="banner">
+          <strong>部分行情缺失</strong>
+          <div>部分标的或日期的行情缺失，依赖行情的指标可能不完整（缺失按缺失处理，不当作零）。</div>
         </div>
       ) : null}
 

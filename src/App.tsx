@@ -36,11 +36,15 @@ export default function App() {
   const [stage, setStage] = useState<string | null>(null)
   const [progress, setProgress] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [quoteStatus, setQuoteStatus] = useState<QuotePack['status']>('ok')
   const lastContext = useRef<{
     fillText: string
     orderText: string
-    quotes: QuotePack
+    cashText: string
     accountName: string
+    initialCapital: number | null
+    cashflowComplete: boolean
+    quotes: QuotePack
     isSample: boolean
   } | null>(null)
 
@@ -76,6 +80,7 @@ export default function App() {
         setStage(stageLabel(2))
         setProgress(3 / STAGES.length)
         const quotes = args.quotesOverride ?? (await fetchQuotes(symbols, start, end))
+        setQuoteStatus(quotes.status ?? 'ok')
         setStage(stageLabel(3))
         setProgress(4 / STAGES.length)
         await sleep(400)
@@ -92,8 +97,11 @@ export default function App() {
         lastContext.current = {
           fillText: args.fillText,
           orderText: args.orderText,
-          quotes,
+          cashText: args.cashText,
           accountName: args.accountName,
+          initialCapital: args.initialCapital && args.initialCapital > 0 ? args.initialCapital : null,
+          cashflowComplete: args.cashflowComplete,
+          quotes,
           isSample: !!args.isSample,
         }
         setBook(next)
@@ -176,6 +184,21 @@ export default function App() {
     })()
   }, [runUpload])
 
+  const retryQuotes = useCallback(() => {
+    const ctx = lastContext.current
+    if (!ctx) return
+    // 重新走上传流程（不传 quotesOverride，强制重新拉取行情）。
+    void runUpload({
+      fillText: ctx.fillText,
+      orderText: ctx.orderText,
+      cashText: ctx.cashText,
+      accountName: ctx.accountName,
+      initialCapital: ctx.initialCapital,
+      cashflowComplete: ctx.cashflowComplete,
+      isSample: ctx.isSample,
+    })
+  }, [runUpload])
+
   if (!book) {
     return (
       <Landing
@@ -195,12 +218,15 @@ export default function App() {
       stage={stage}
       progress={progress}
       updating={updating}
+      quoteStatus={quoteStatus}
+      onRetryQuotes={retryQuotes}
       onReset={() => {
         lastContext.current = null
         setBook(null)
         setStage(null)
         setError(null)
         setProgress(null)
+        setQuoteStatus('ok')
       }}
       onSample={loadRealSample}
       onUpdateAccount={updateAccount}
