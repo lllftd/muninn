@@ -261,7 +261,7 @@ export function mergeSameOrder(fills: Fill[]): Fill[] {
 
 export function importFutu(fillText: string, orderText?: string): ImportResult {
   const warnings: Warning[] = []
-  const dropped = { nonUs: 0, options: 0, funds: 0, fractional: 0, drip: 0 }
+  const dropped = { nonUs: 0, options: 0, funds: 0, fractional: 0, drip: 0, unrecognized: 0 }
   const excludedRows: ImportResult['excludedRows'] = []
   const headers = csvHeaders(fillText)
   const broker = detectBroker(headers)
@@ -270,6 +270,8 @@ export function importFutu(fillText: string, orderText?: string): ImportResult {
   if (!raw.length) {
     throw new Error(unrecognizedMessage(headers))
   }
+  // 非垃圾行里没能解析成成交的（缺代码/数量/价格/时间），不当作正股，单独计数。
+  dropped.unrecognized = Math.max(0, objects.length - raw.length)
   const filtered: Fill[] = []
   let dripKept = 0
   for (const fill of raw) {

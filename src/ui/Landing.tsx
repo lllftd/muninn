@@ -255,7 +255,8 @@ export function Landing(props: {
         </div>
 
         {imported ? (
-          <div className="validate-strip">
+          <>
+            <div className="validate-strip">
             <span>
               {BROKER_LABEL[imported.broker]} · {imported.rawCount} 条成交记录
             </span>
@@ -271,6 +272,44 @@ export function Landing(props: {
               <span>尚未提供订单历史，费用按缺失处理</span>
             )}
           </div>
+
+          <div className="import-breakdown">
+            <div className="ib-row">
+              <span>已识别正股</span>
+              <b>{imported.fills.length} 笔</b>
+            </div>
+            <div className="ib-row">
+              <span>已排除期权</span>
+              <b>{imported.dropped.options} 笔</b>
+            </div>
+            {imported.dropped.nonUs + imported.dropped.funds ? (
+              <div className="ib-row">
+                <span>已排除非美股 / 基金</span>
+                <b>{imported.dropped.nonUs + imported.dropped.funds} 笔</b>
+              </div>
+            ) : null}
+            {imported.dropped.unrecognized ? (
+              <div className="ib-row">
+                <span>无法识别（不当作正股）</span>
+                <b>{imported.dropped.unrecognized} 行</b>
+              </div>
+            ) : null}
+            {imported.dropped.options ? (
+              <details className="ib-detail">
+                <summary>查看被排除的期权代码与原因</summary>
+                <ul>
+                  {imported.excludedRows
+                    .filter((r) => r.reason === 'option')
+                    .map((r) => (
+                      <li key={`${r.symbol}-${r.time}`}>
+                        {r.symbol} · {r.name} · 期权（不计入收益与行为指标）
+                      </li>
+                    ))}
+                </ul>
+              </details>
+            ) : null}
+          </div>
+          </>
         ) : null}
 
         <details className="account-fold" ref={accountFold}>

@@ -435,6 +435,8 @@ export type ImportResult = {
     funds: number
     fractional: number
     drip: number
+    /** 无法解析成成交的行（缺代码/数量/价格/时间），不当作正股。 */
+    unrecognized: number
   }
 }
 
